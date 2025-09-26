@@ -21,6 +21,7 @@ except ImportError:
 from .bigquery_utils import BigQueryManager
 from .config import get_config
 from .replicator import PylonReplicator
+from .classifier import PylonClassifier
 
 # Configure structured logging with colors
 structlog.configure(
@@ -81,6 +82,69 @@ def truncate_table(table_name: str, log_level: str = "INFO") -> None:
 
     except Exception as e:
         logger.error("Table truncation failed", table_name=table_name, error=str(e))
+        sys.exit(1)
+
+
+def run_classification(
+    fields: list[str] = ["resolution", "category"],
+    batch_size: int = 10,
+    log_level: str = "INFO",
+    max_records: Optional[int] = None,
+    issue_id: Optional[str] = None,
+    created_start: Optional[str] = None,
+    created_end: Optional[str] = None,
+) -> None:
+    """Classify closed Pylon issues with missing resolution or category."""
+    # Setup logging
+    setup_logging(log_level)
+
+    try:
+        # Load configuration
+        config = get_config()
+
+        # Create classifier
+        classifier = PylonClassifier(config)
+
+        logger.info("Starting classification", fields=fields, batch_size=batch_size, max_records=max_records, issue_id=issue_id)
+
+        # Run classification
+        start_time = datetime.now()
+        result = classifier.classify_issues(
+            fields=fields,
+            batch_size=batch_size,
+            max_records=max_records,
+            issue_id=issue_id,
+            created_start=created_start,
+            created_end=created_end
+        )
+
+        # Display results
+        duration = datetime.now() - start_time
+
+        table = Table(title="Classification Results")
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="magenta")
+
+        table.add_row("Fields Classified", ", ".join(fields))
+        table.add_row("Issues Processed", str(result["total_processed"]))
+        table.add_row("Issues Classified", str(result["total_classified"]))
+        table.add_row("Issues Updated", str(result["total_updated"]))
+        table.add_row("Total Errors", str(result["total_errors"]))
+        table.add_row("Success", "✅" if result["success"] else "❌")
+        table.add_row("Duration", str(duration))
+
+        console.print(table)
+
+        if not result["success"]:
+            logger.error("Classification failed", total_errors=result["total_errors"])
+        else:
+            logger.info("Classification completed successfully", duration=str(duration))
+
+        # Close connections
+        classifier.close()
+
+    except Exception as e:
+        logger.error("Classification failed", error=str(e))
         sys.exit(1)
 
 
@@ -354,6 +418,45 @@ def main() -> None:
         default="INFO",
     )
 
+    # Classify command
+    classify_parser = subparsers.add_parser(
+        "classify", help="Classify closed Pylon issues with missing resolution or category"
+    )
+    classify_parser.add_argument(
+        "--log-level",
+        help="Log level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        default="INFO",
+    )
+    classify_parser.add_argument(
+        "--batch-size", type=int, help="Batch size for processing issues", default=100
+    )
+    classify_parser.add_argument(
+        "--max-records", type=int, help="Maximum number of issues to classify", default=None
+    )
+    classify_parser.add_argument(
+        "--fields",
+        nargs="+",
+        help="Fields to classify",
+        choices=["resolution", "category"],
+        default=["resolution", "category"],
+    )
+    classify_parser.add_argument(
+        "--issue-id",
+        help="Classify a single issue by ID",
+        default=None,
+    )
+    classify_parser.add_argument(
+        "--created-start",
+        help="Created_at start (RFC3339/ISO format)",
+        default=None,
+    )
+    classify_parser.add_argument(
+        "--created-end",
+        help="Created_at end (RFC3339/ISO format)",
+        default=None,
+    )
+
     args = parser.parse_args()
 
     # Handle different commands
@@ -372,6 +475,16 @@ def main() -> None:
         )
     elif args.command == "truncate":
         truncate_table(table_name=args.table_name, log_level=args.log_level)
+    elif args.command == "classify":
+        run_classification(
+            fields=args.fields,
+            batch_size=args.batch_size,
+            log_level=args.log_level,
+            max_records=args.max_records,
+            issue_id=args.issue_id,
+            created_start=args.created_start,
+            created_end=args.created_end,
+        )
     else:
         parser.print_help()
         sys.exit(1)

@@ -604,6 +604,27 @@ class BigQueryManager:
             )
             raise BigQueryError(f"Failed to get issue IDs from BigQuery: {str(e)}")
 
+    def query_to_list(self, query: str) -> List[Dict[str, Any]]:
+        """Execute a query and return results as a list of dictionaries."""
+        try:
+            logger.debug("Executing query", query=query)
+            query_job = self.client.query(query)
+            results = query_job.result()
+
+            data = []
+            for row in results:
+                # Convert row to dictionary
+                row_dict = {}
+                for key, value in row.items():
+                    row_dict[key] = value
+                data.append(row_dict)
+
+            logger.debug("Query executed successfully", row_count=len(data))
+            return data
+
+        except Exception as e:
+            logger.error("Failed to execute query", query=query, error=str(e))
+            raise BigQueryError(f"Failed to execute query: {str(e)}")
 
     def close(self) -> None:
         """Close the BigQuery client."""

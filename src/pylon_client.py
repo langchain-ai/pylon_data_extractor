@@ -1,6 +1,7 @@
 """Pylon API client for data extraction."""
 
 import random
+import threading
 import time
 from collections.abc import Iterator
 from datetime import datetime, timedelta
@@ -42,33 +43,33 @@ class RespectRetryAfterWait:
         return delay
 
 
-class RateLimiter:
-    """Simple rate limiter to prevent hitting API rate limits."""
+class ConservativeRateLimiter:
+    """Conservative rate limiter that prevents bursts and maintains steady spacing."""
 
-    def __init__(self, requests_per_minute: int = 60):
+    def __init__(self, requests_per_minute: int = 40):
+        # Use a very conservative limit to avoid 429s completely
         self.requests_per_minute = requests_per_minute
-        self.requests = []
+        self.min_interval = 60.0 / requests_per_minute  # Minimum seconds between requests
+        self.last_request_time = 0
+        self._lock = threading.Lock()
 
     def wait_if_needed(self):
-        """Wait if necessary to respect rate limits."""
-        now = datetime.now()
+        """Wait if necessary to respect rate limits with steady spacing."""
+        with self._lock:
+            now = time.time()
 
-        # Remove requests older than 1 minute
-        cutoff = now - timedelta(minutes=1)
-        self.requests = [req_time for req_time in self.requests if req_time > cutoff]
+            # Calculate time since last request
+            time_since_last = now - self.last_request_time
 
-        # If we're at the limit, wait until the oldest request is 1 minute old
-        if len(self.requests) >= self.requests_per_minute:
-            oldest_request = min(self.requests)
-            wait_until = oldest_request + timedelta(minutes=1)
-            wait_seconds = (wait_until - now).total_seconds()
+            # If we need to wait, do so
+            if time_since_last < self.min_interval:
+                wait_time = self.min_interval - time_since_last
+                logger.debug("Rate limiting: waiting", wait_seconds=wait_time)
+                time.sleep(wait_time)
+                now = time.time()
 
-            if wait_seconds > 0:
-                logger.info("Rate limiting: waiting", wait_seconds=wait_seconds)
-                time.sleep(wait_seconds)
-
-        # Record this request
-        self.requests.append(now)
+            # Record this request time
+            self.last_request_time = now
 
 
 class PylonAPIError(Exception):
@@ -106,8 +107,9 @@ class PylonClient:
         self.config = config or get_config()
         self.session = requests.Session()
 
-        # Set up rate limiter
-        self.rate_limiter = RateLimiter(self.config.pylon.requests_per_minute)
+        # Set up rate limiter - use conservative limit to avoid 429s
+        conservative_limit = min(40, self.config.pylon.requests_per_minute)
+        self.rate_limiter = ConservativeRateLimiter(conservative_limit)
 
         # Set up authentication
         if self.config.pylon.api_key:
@@ -162,7 +164,7 @@ class PylonClient:
 
         url = self._get_full_url(endpoint)
 
-        logger.info(
+        logger.debug(
             "Making API request", method=method, url=url
         )
 
@@ -240,6 +242,10 @@ class PylonClient:
         return self._make_request_with_rate_limit(
             "GET", f"/issues/{issue_id}/messages"
         )
+
+    def _patch_issue(self, issue_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Update an issue via PATCH request."""
+        return self._make_request_with_rate_limit("PATCH", f"/issues/{issue_id}", json=data)
 
     def get_contacts(
         self,

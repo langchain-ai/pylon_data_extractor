@@ -38,7 +38,7 @@ class PylonConfig(BaseModel):
         default=True, description="Add jitter to rate limit backoff delays"
     )
     requests_per_minute: int = Field(
-        default=60, description="Expected requests per minute limit"
+        default=40, description="Expected requests per minute limit"
     )
 
 
@@ -113,7 +113,7 @@ class Config(BaseModel):
             rate_limit_max_delay=int(os.getenv("PYLON_RATE_LIMIT_MAX_DELAY", "300")),
             rate_limit_jitter=os.getenv("PYLON_RATE_LIMIT_JITTER", "true").lower()
             == "true",
-            requests_per_minute=int(os.getenv("PYLON_REQUESTS_PER_MINUTE", "60")),
+            requests_per_minute=int(os.getenv("PYLON_REQUESTS_PER_MINUTE", "40")),
         )
 
         bigquery_config = BigQueryConfig(

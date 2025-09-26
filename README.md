@@ -42,7 +42,7 @@ Extended data replication utility for Pylon using the Pylon REST API. This tool 
 
 ### Command Line Interface
 
-The tool provides two main commands: `replicate` and `truncate`.
+The tool provides three main commands: `replicate`, `truncate`, and `classify`.
 
 #### Replicate Data
 
@@ -62,7 +62,13 @@ uv run pylon-extract replicate all
 uv run pylon-extract replicate accounts --save-each-page
 
 # Limit the number of records extracted
-uv run pylon-extract replicate accounts --max-records 1000
+uv run pylon-extract replicate issues --max-records 1000
+
+# Message replication methods
+uv run pylon-extract replicate messages --created-start "2024-09-03" --created-end "2024-12-31"
+uv run pylon-extract replicate messages --issue-id "XYZ"
+uv run pylon-extract replicate messages --states "on_hold"
+
 ```
 
 #### Truncate Tables
@@ -73,6 +79,38 @@ Clear BigQuery tables before fresh loads:
 # Truncate a specific table
 uv run pylon-extract truncate int__pylon_accounts
 ```
+
+#### Classify Issues
+
+Automatically classify closed Pylon issues with missing resolution or category fields using AI:
+
+```bash
+# Classify both resolution and category for all applicable issues
+uv run pylon-extract classify
+
+# Classify only resolution field
+uv run pylon-extract classify --fields resolution
+
+# Classify only category field
+uv run pylon-extract classify --fields category
+
+# Classify with custom batch size and max records
+uv run pylon-extract classify --batch-size 50 --max-records 100
+
+# Classify a single specific issue
+uv run pylon-extract classify --issue-id "d5a04df6-6882-454b-bc8f-0d91fb688762"
+
+# Classification with debug logging
+uv run pylon-extract classify --log-level DEBUG
+```
+
+The classify command:
+- Identifies closed issues with missing resolution or category values
+- Retrieves conversation history for each issue from BigQuery
+- Uses OpenAI GPT-4 to classify issues based on conversation content
+- Only updates issues when confidence score is above 0.8
+- Automatically tags updated issues with "auto-classified"
+- Supports both individual and combined field classification
 
 #### Available Object Types
 
@@ -108,7 +146,7 @@ replication:
 
 Use with:
 ```bash
-uv run pylon-extract replicate accounts --config config/production.yaml
+uv run pylon-extract replicate accounts
 ```
 
 ## Development
@@ -121,18 +159,6 @@ uv sync --dev
 
 # Run tests
 uv run pytest
-
-# Run tests with coverage
-uv run pytest --cov=src
-
-# Format code
-uv run black src/ tests/
-
-# Lint code
-uv run ruff check src/ tests/
-
-# Type checking
-uv run mypy src/
 ```
 
 ### Project Structure
