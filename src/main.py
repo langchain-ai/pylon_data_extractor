@@ -4,6 +4,7 @@ import argparse
 import sys
 from datetime import datetime
 from typing import Optional
+import json
 
 import structlog
 from rich.console import Console
@@ -85,12 +86,15 @@ def truncate_table(table_name: str, log_level: str = "INFO") -> None:
 
 def run_replication(
     object_type: str,
-    updated_dt: Optional[str] = None,
     batch_size: Optional[int] = None,
     log_level: str = "INFO",
-    config_file: Optional[str] = None,
     save_each_page: bool = False,
     max_records: Optional[int] = None,
+    created_start: Optional[str] = None,
+    created_end: Optional[str] = None,
+    states: Optional[list[str]] = None,
+    issues_filter_json: Optional[str] = None,
+    issue_id: Optional[str] = None,
 ) -> None:
     """Extract and replicate data from Pylon to BigQuery."""
 
@@ -119,52 +123,78 @@ def run_replication(
 
         # Override batch size if provided
         if batch_size:
+            # Affects downstream BigQuery batching semantics
             config.replication.batch_size = batch_size
+            # Also use the same value for API pagination page size as requested
+            config.replication.api_batch_size = batch_size
 
         # Override max records limit if provided
         if max_records:
             config.replication.max_records_limit = max_records
 
-        # Parse updated_dt if provided
-        updated_since = None
-        if updated_dt:
-            try:
-                # Try parsing as ISO format first
-                updated_since = datetime.fromisoformat(
-                    updated_dt.replace("Z", "+00:00")
-                )
-            except ValueError:
-                try:
-                    # Try parsing as date only
-                    updated_since = datetime.strptime(updated_dt, "%Y-%m-%d")
-                except ValueError:
-                    logger.error(
-                        "Invalid date format",
-                        updated_dt=updated_dt,
-                        expected_formats=["YYYY-MM-DD", "YYYY-MM-DDTHH:MM:SS"],
-                    )
-                    sys.exit(1)
+        # Note: updated_since filtering is not supported by the API
 
         # Create replicator
         replicator = PylonReplicator(config)
 
         logger.info("Starting replication", object_type=object_type)
-        if updated_since:
-            logger.info("Incremental replication", updated_since=updated_since)
-        else:
-            logger.info("Full replication")
+        logger.info("Full replication")
 
         # Run replication
         start_time = datetime.now()
 
+        # Build issues query options if provided
+        issues_query = None
+        if created_start or created_end or states or issues_filter_json or issue_id:
+            issues_query = {}
+            if created_start:
+                issues_query["created_start"] = datetime.fromisoformat(created_start)
+            if created_end:
+                issues_query["created_end"] = datetime.fromisoformat(created_end)
+            if states:
+                issues_query["states"] = states
+            if issues_filter_json:
+                try:
+                    issues_query["extra_filters"] = json.loads(issues_filter_json)
+                except json.JSONDecodeError as e:
+                    logger.error("Invalid JSON provided for --issues-filter-json", error=str(e))
+                    sys.exit(1)
+            if issue_id:
+                issues_query["issue_id"] = issue_id
+
+        # Build messages filter from the same CLI arguments
+        messages_filter = None
+        if object_type == "messages" and (issue_id or created_start or created_end or states):
+            messages_filter = {}
+            if issue_id:
+                messages_filter["issue_id"] = issue_id
+            if created_start:
+                messages_filter["start_time"] = datetime.fromisoformat(created_start)
+            if created_end:
+                messages_filter["end_time"] = datetime.fromisoformat(created_end)
+            if states:
+                # Convert from API format to display format for state filtering
+                state_mapping = {
+                    "new": "New",
+                    "waiting_on_you": "Waiting on You",
+                    "waiting_on_customer": "Waiting on Customer",
+                    "on_hold": "On Hold",
+                    "closed": "Closed"
+                }
+                # Use first state if multiple provided
+                if len(states) > 1:
+                    logger.warning("Multiple states provided for message filtering, using first one", states=states)
+                messages_filter["state"] = state_mapping.get(states[0], states[0])
+
         if object_type == "all":
             results = replicator.replicate_all(
-                updated_since, batch_size, save_each_page, max_records
+                batch_size, save_each_page, max_records
             )
             display_results(results, start_time)
         else:
             result = replicator.replicate_object(
-                object_type, updated_since, batch_size, save_each_page, max_records
+                object_type, batch_size, save_each_page, max_records,
+                issues_query=issues_query, messages_filter=messages_filter
             )
             display_single_result(result, start_time)
 
@@ -261,11 +291,6 @@ def main() -> None:
         choices=["accounts", "issues", "messages", "contacts", "users", "teams", "all"],
     )
     replicate_parser.add_argument(
-        "--updated-dt",
-        help="Start date for incremental replication (ISO format: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)",
-        default=None,
-    )
-    replicate_parser.add_argument(
         "--batch-size", type=int, help="Batch size for processing records", default=None
     )
     replicate_parser.add_argument(
@@ -274,9 +299,7 @@ def main() -> None:
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         default="INFO",
     )
-    replicate_parser.add_argument(
-        "--config", help="Path to configuration file", default=None
-    )
+    # Note: configuration file flag removed; environment/config module used instead
     replicate_parser.add_argument(
         "--save-each-page",
         action="store_true",
@@ -286,6 +309,34 @@ def main() -> None:
         "--max-records",
         type=int,
         help="Maximum number of records to download (overrides config file setting)",
+        default=None,
+    )
+    # Issues search filters
+    replicate_parser.add_argument(
+        "--created-start",
+        help="Created_at start (RFC3339/ISO format)",
+        default=None,
+    )
+    replicate_parser.add_argument(
+        "--created-end",
+        help="Created_at end (RFC3339/ISO format)",
+        default=None,
+    )
+    replicate_parser.add_argument(
+        "--states",
+        nargs="+",
+        help="Issue states filter (one or more)",
+        choices=["new", "waiting_on_you", "waiting_on_customer", "on_hold", "closed"],
+        default=None,
+    )
+    replicate_parser.add_argument(
+        "--issues-filter-json",
+        help="Additional JSON filters to merge into issues search body",
+        default=None,
+    )
+    replicate_parser.add_argument(
+        "--issue-id",
+        help="Replicate a single issue by ID (overrides other issue filters)",
         default=None,
     )
 
@@ -302,9 +353,6 @@ def main() -> None:
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         default="INFO",
     )
-    truncate_parser.add_argument(
-        "--config", help="Path to configuration file", default=None
-    )
 
     args = parser.parse_args()
 
@@ -312,12 +360,15 @@ def main() -> None:
     if args.command == "replicate":
         run_replication(
             object_type=args.object_type,
-            updated_dt=args.updated_dt,
             batch_size=args.batch_size,
             log_level=args.log_level,
-            config_file=args.config,
             save_each_page=args.save_each_page,
             max_records=args.max_records,
+            created_start=args.created_start,
+            created_end=args.created_end,
+            states=args.states,
+            issues_filter_json=args.issues_filter_json,
+            issue_id=args.issue_id,
         )
     elif args.command == "truncate":
         truncate_table(table_name=args.table_name, log_level=args.log_level)

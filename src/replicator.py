@@ -66,19 +66,21 @@ class PylonReplicator:
     def replicate_object(
         self,
         object_type: str,
-        updated_since: Optional[datetime] = None,
         batch_size: Optional[int] = None,
         save_each_page: bool = False,
         max_records: Optional[int] = None,
+        issues_query: Optional[Dict[str, Any]] = None,
+        messages_filter: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Replicate a specific object type to BigQuery.
 
         Args:
             object_type: Type of object to replicate
-            updated_since: Start date for incremental replication
             batch_size: Override default batch size
             save_each_page: If True, save data after each API page (more frequent saves)
             max_records: Maximum number of records to download (None for no limit)
+            issues_query: Query parameters for filtering issues
+            messages_filter: Filter parameters for message replication (start_time, end_time, issue_id, state)
         """
         if object_type not in self.table_configs:
             raise ReplicationError(f"Unknown object type: {object_type}")
@@ -102,32 +104,24 @@ class PylonReplicator:
         # Ensure table exists
         self.bigquery_manager.ensure_table_exists(table_name)
 
-        # Get max timestamp for incremental replication
-        if not updated_since and not self.config.replication.full_refresh:
-            updated_since = self.bigquery_manager.get_max_timestamp(table_name)
-            if updated_since:
-                logger.info(
-                    "Using incremental replication", updated_since=updated_since
-                )
-
         # Special handling for messages
         if object_type == "messages":
             return self._replicate_messages(
-                updated_since, batch_size, save_each_page, max_records
+                batch_size, save_each_page, max_records, messages_filter
             )
 
         # Replicate other object types
         return self._replicate_standard_object(
-            object_type, updated_since, batch_size, save_each_page, max_records
+            object_type, batch_size, save_each_page, max_records, issues_query=issues_query
         )
 
     def _replicate_standard_object(
         self,
         object_type: str,
-        updated_since: Optional[datetime] = None,
         batch_size: int = 1000,
         save_each_page: bool = False,
         max_records: Optional[int] = None,
+        issues_query: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Replicate standard object types (accounts, issues, contacts, users, teams)."""
         config = self.table_configs[object_type]
@@ -159,9 +153,30 @@ class PylonReplicator:
         records_downloaded = 0
 
         try:
-            for item in iterator(
-                updated_since=updated_since, batch_size=api_batch_size
-            ):
+            if object_type == "issues":
+                # Use new search-based iteration with optional filters
+                issue_id = issues_query.get("issue_id") if issues_query else None
+                if issue_id:
+                    # Fetch a single issue and iterate over that single item
+                    single = self.pylon_client.get_issue(issue_id)
+                    source_iter = iter([single.get("data", single)])
+                else:
+                    created_start = issues_query.get("created_start") if issues_query else None
+                    created_end = issues_query.get("created_end") if issues_query else None
+                    states = issues_query.get("states") if issues_query else None
+                    extra_filters = issues_query.get("extra_filters") if issues_query else None
+                    source_iter = self.pylon_client.iter_all_issues(
+                        created_start=created_start,
+                        created_end=created_end,
+                        states=states,
+                        extra_filters=extra_filters,
+                    )
+            else:
+                source_iter = iterator(
+                    batch_size=api_batch_size
+                )
+
+            for item in source_iter:
                 # Check if we've reached the record limit
                 if max_records and records_downloaded >= max_records:
                     logger.info(
@@ -251,12 +266,16 @@ class PylonReplicator:
 
     def _replicate_messages(
         self,
-        updated_since: Optional[datetime] = None,
         batch_size: int = 1000,
         save_each_page: bool = False,
         max_records: Optional[int] = None,
+        messages_filter: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Replicate messages for issues by scanning int__pylon_issues table first."""
+        """Replicate messages for issues using DB-first approach or direct API call for single issue.
+
+        Args:
+            messages_filter: Optional filter with start_time, end_time, issue_id, or state
+        """
         table_name = "int__pylon_messages"
         primary_keys = ["issue_id", "message_id"]
 
@@ -284,25 +303,41 @@ class PylonReplicator:
         records_downloaded = 0
 
         try:
-            # First, get issue IDs from the int__pylon_issues table for the given timerange
-            logger.info(
-                "Scanning int__pylon_issues table for issue IDs",
-                updated_since=updated_since,
-            )
-            issue_ids = self.bigquery_manager.get_issue_ids_for_timerange(
-                updated_since=updated_since
-            )
+            # Extract filter parameters
+            messages_filter = messages_filter or {}
+            issue_id = messages_filter.get("issue_id")
+            start_time = messages_filter.get("start_time")
+            end_time = messages_filter.get("end_time")
+            state = messages_filter.get("state")
 
-            if not issue_ids:
-                logger.info("No issues found in the specified time range")
-                return {
-                    "object_type": "messages",
-                    "table_name": table_name,
-                    "total_processed": 0,
-                    "total_errors": 0,
-                    "total_batches": 0,
-                    "success": True,
-                }
+            # If specific issue_id is provided, use it directly without DB query
+            if issue_id:
+                logger.info("Processing messages for specific issue", issue_id=issue_id)
+                issue_ids = [issue_id]
+            else:
+                # Get issue IDs from the database using comprehensive filtering
+                logger.info(
+                    "Querying database for issue IDs",
+                    start_time=start_time.isoformat() if start_time else None,
+                    end_time=end_time.isoformat() if end_time else None,
+                    state=state,
+                )
+                issue_ids = self.bigquery_manager.get_issue_ids_for_filtering(
+                    start_time=start_time,
+                    end_time=end_time,
+                    state=state
+                )
+
+                if not issue_ids:
+                    logger.info("No issues found matching the specified criteria")
+                    return {
+                        "object_type": "messages",
+                        "table_name": table_name,
+                        "total_processed": 0,
+                        "total_errors": 0,
+                        "total_batches": 0,
+                        "success": True,
+                    }
 
             logger.info("Found issues to process", issue_count=len(issue_ids))
 
@@ -327,8 +362,6 @@ class PylonReplicator:
                     # Get all messages for this issue with rate limiting
                     for message in self.pylon_client.iter_all_issue_messages(
                         issue_id=issue_id,
-                        updated_since=updated_since,
-                        batch_size=api_batch_size,
                     ):
                         # Check if we've reached the record limit
                         if max_records and records_downloaded >= max_records:
@@ -372,7 +405,7 @@ class PylonReplicator:
                             batch = []
 
                 except PylonAPIError as e:
-                    logger.error(
+                    logger.debug(
                         "API error while processing messages for issue",
                         issue_id=issue_id,
                         error=str(e),
@@ -467,7 +500,6 @@ class PylonReplicator:
 
     def replicate_all(
         self,
-        updated_since: Optional[datetime] = None,
         batch_size: Optional[int] = None,
         save_each_page: bool = False,
         max_records: Optional[int] = None,
@@ -477,12 +509,12 @@ class PylonReplicator:
         total_processed = 0
         total_errors = 0
 
-        logger.info("Starting full replication", updated_since=updated_since)
+        logger.info("Starting full replication")
 
         for object_type in self.table_configs.keys():
             try:
                 result = self.replicate_object(
-                    object_type, updated_since, batch_size, save_each_page, max_records
+                    object_type, batch_size, save_each_page, max_records
                 )
                 results[object_type] = result
                 total_processed += result["total_processed"]

@@ -52,9 +52,6 @@ Extract and replicate data from Pylon to BigQuery:
 # Replicate all accounts
 uv run pylon-extract replicate accounts
 
-# Replicate with incremental sync (since specific date)
-uv run pylon-extract replicate accounts --updated-dt 2024-01-01
-
 # Replicate with custom batch size
 uv run pylon-extract replicate accounts --batch-size 500
 
@@ -210,5 +207,4 @@ uv run pylon-extract replicate accounts --log-level DEBUG
 
 - **Batch Size**: Larger batches reduce API calls but increase memory usage
 - **Rate Limiting**: Respect Pylon's API rate limits to avoid throttling
-- **Incremental Sync**: Use `--updated-dt` for efficient delta replication
 - **BigQuery Streaming**: Data is streamed to BigQuery for better performance

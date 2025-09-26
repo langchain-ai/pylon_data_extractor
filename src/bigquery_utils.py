@@ -456,54 +456,125 @@ class BigQueryManager:
 
         return [serialize_datetime_in_dict(row) for row in serialized_data]
 
-    def get_issue_ids_for_timerange(
+    def get_issue_ids_for_filtering(
         self,
-        updated_since: Optional[datetime] = None,
+        start_time: Optional[datetime] = None,
         end_time: Optional[datetime] = None,
+        issue_id: Optional[str] = None,
+        state: Optional[str] = None,
     ) -> List[str]:
-        """Get issue IDs from int__pylon_issues table for a given time range.
+        """Get issue IDs from both pylon_issues and int__pylon_issues tables with comprehensive filtering.
 
         Args:
-            updated_since: Start time for filtering (inclusive)
+            start_time: Start time for filtering (inclusive)
             end_time: End time for filtering (inclusive)
+            issue_id: Specific issue ID to filter for
+            state: Issue state to filter for
 
         Returns:
             List of issue IDs
         """
         try:
-            # Build the query with optional time filtering
-            where_conditions = []
             params = []
 
-            if updated_since:
-                where_conditions.append("updated_at >= @updated_since")
-                params.append(
-                    bigquery.ScalarQueryParameter(
-                        "updated_since", "TIMESTAMP", updated_since
-                    )
-                )
+            # If filtering by specific issue_id, use simple query
+            if issue_id:
+                query = f"""
+                SELECT '{issue_id}' as issue_id
+                """
+                logger.info("Querying for specific issue ID", issue_id=issue_id)
 
-            if end_time:
-                where_conditions.append("updated_at <= @end_time")
-                params.append(
-                    bigquery.ScalarQueryParameter("end_time", "TIMESTAMP", end_time)
-                )
+                query_job = self.client.query(query)
+                results = query_job.result()
+                issue_ids = [row.issue_id for row in results]
 
-            where_clause = ""
-            if where_conditions:
-                where_clause = f"WHERE {' AND '.join(where_conditions)}"
+                logger.info("Retrieved specific issue ID", count=len(issue_ids))
+                return issue_ids
 
+            # Build comprehensive query with CTE for date range parameters
+            cte_parts = []
+            if start_time or end_time:
+                if start_time:
+                    params.append(bigquery.ScalarQueryParameter("start_time", "STRING", start_time.strftime('%Y-%m-%d')))
+                    cte_parts.append("@start_time as start_time")
+                else:
+                    cte_parts.append("'1900-01-01' as start_time")
+
+                if end_time:
+                    params.append(bigquery.ScalarQueryParameter("end_time", "STRING", end_time.strftime('%Y-%m-%d')))
+                    cte_parts.append("@end_time as end_time")
+                else:
+                    cte_parts.append("'2099-12-31' as end_time")
+            else:
+                cte_parts.extend(["'1900-01-01' as start_time", "'2099-12-31' as end_time"])
+
+            # Build the main query
+            query_parts = []
+
+            # Add state parameter if provided
+            if state:
+                params.append(bigquery.ScalarQueryParameter("state_filter", "STRING", state))
+
+            # CTE for time parameters
             query = f"""
-            SELECT DISTINCT issue_id
-            FROM `{self.config.bigquery.project_id}.{self.config.bigquery.dataset_id}.int__pylon_issues`
-            {where_clause}
+            WITH times as (
+                SELECT {', '.join(cte_parts)}
+            )
+            """
+
+            # First part: query src_pylon.pylon_issues table
+            pylon_issues_conditions = []
+            if start_time or end_time:
+                pylon_issues_conditions.append("""
+                    (created_at BETWEEN CAST(times.start_time AS TIMESTAMP) AND CAST(times.end_time AS TIMESTAMP)
+                     OR latest_message_time BETWEEN CAST(times.start_time AS TIMESTAMP) AND CAST(times.end_time AS TIMESTAMP))
+                """)
+
+            if state:
+                # Handle state mapping from "Waiting on Customer" to "waiting_on_customer"
+                pylon_issues_conditions.append("state = @state_filter")
+
+            pylon_issues_where = " AND ".join(pylon_issues_conditions) if pylon_issues_conditions else "TRUE"
+
+            query += f"""
+            SELECT id as issue_id
+            FROM `{self.config.bigquery.project_id}.{self.config.bigquery.dataset_id}.pylon_issues`, times
+            WHERE {pylon_issues_where}
+            """
+
+            # Second part: query int__pylon_issues table
+            int_issues_conditions = []
+            if start_time or end_time:
+                int_issues_conditions.append("""
+                    (TIMESTAMP(JSON_VALUE(data, "$.created_at"))
+                      BETWEEN CAST(times.start_time AS TIMESTAMP) AND CAST(times.end_time AS TIMESTAMP)
+                     OR TIMESTAMP(JSON_VALUE(data, "$.latest_message_time"))
+                      BETWEEN CAST(times.start_time AS TIMESTAMP) AND CAST(times.end_time AS TIMESTAMP))
+                """)
+
+            if state:
+                # Convert display state to internal state format
+                internal_state = state.lower().replace(' ', '_')
+                params.append(bigquery.ScalarQueryParameter("internal_state_filter", "STRING", internal_state))
+                int_issues_conditions.append("JSON_VALUE(data, \"$.state\") = @internal_state_filter")
+
+            int_issues_where = " AND ".join(int_issues_conditions) if int_issues_conditions else "TRUE"
+
+            query += f"""
+            UNION DISTINCT
+            SELECT issue_id
+            FROM `{self.config.bigquery.project_id}.{self.config.bigquery.dataset_id}.int__pylon_issues`, times
+            WHERE {int_issues_where}
             ORDER BY issue_id
             """
 
             logger.info(
-                "Querying issue IDs from BigQuery",
-                updated_since=updated_since.isoformat() if updated_since else None,
+                "Querying issue IDs from BigQuery with comprehensive filtering",
+                start_time=start_time.isoformat() if start_time else None,
                 end_time=end_time.isoformat() if end_time else None,
+                state=state,
+                has_time_filter=bool(start_time or end_time),
+                has_state_filter=bool(state),
             )
 
             query_job = self.client.query(
@@ -516,8 +587,9 @@ class BigQueryManager:
             logger.info(
                 "Retrieved issue IDs from BigQuery",
                 count=len(issue_ids),
-                updated_since=updated_since.isoformat() if updated_since else None,
+                start_time=start_time.isoformat() if start_time else None,
                 end_time=end_time.isoformat() if end_time else None,
+                state=state,
             )
 
             return issue_ids
@@ -526,10 +598,12 @@ class BigQueryManager:
             logger.error(
                 "Failed to get issue IDs from BigQuery",
                 error=str(e),
-                updated_since=updated_since.isoformat() if updated_since else None,
+                start_time=start_time.isoformat() if start_time else None,
                 end_time=end_time.isoformat() if end_time else None,
+                state=state,
             )
             raise BigQueryError(f"Failed to get issue IDs from BigQuery: {str(e)}")
+
 
     def close(self) -> None:
         """Close the BigQuery client."""

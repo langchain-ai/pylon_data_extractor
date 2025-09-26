@@ -200,26 +200,22 @@ class TestPylonReplicator:
                 assert obj_type in result["results"]
                 assert result["results"][obj_type]["success"] is True
 
-    def test_replicate_with_updated_since(
+    def test_replicate_with_default_params(
         self, mock_config, mock_pylon_client, mock_bigquery_manager
     ):
-        """Test replication with updated_since parameter."""
+        """Test replication with default parameters."""
         with (
             patch("src.replicator.PylonClient", return_value=mock_pylon_client),
             patch("src.replicator.BigQueryManager", return_value=mock_bigquery_manager),
         ):
 
             replicator = PylonReplicator(mock_config)
-            updated_since = datetime(2024, 1, 1)
 
-            result = replicator.replicate_object(
-                "accounts", updated_since=updated_since
-            )
+            result = replicator.replicate_object("accounts")
 
             assert result["success"] is True
-            # Verify that the iterator was called with updated_since
+            # Verify that the cursor iterator was called with default parameters
             mock_pylon_client.iter_all_accounts.assert_called_once_with(
-                updated_since=updated_since,
                 batch_size=100,  # Mock config has batch_size=100
             )
 
@@ -237,9 +233,9 @@ class TestPylonReplicator:
             result = replicator.replicate_object("accounts", batch_size=50)
 
             assert result["success"] is True
-            # Verify that the iterator was called with custom batch size
+            # Verify that the cursor iterator was called with custom batch size
             mock_pylon_client.iter_all_accounts.assert_called_once_with(
-                updated_since=None, batch_size=50
+                batch_size=50
             )
 
     def test_close(self, mock_config, mock_pylon_client, mock_bigquery_manager):

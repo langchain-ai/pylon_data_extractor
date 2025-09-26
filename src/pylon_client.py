@@ -20,6 +20,28 @@ from .config import Config, get_config
 logger = structlog.get_logger(__name__)
 
 
+class RespectRetryAfterWait:
+    """Custom wait strategy that respects API retry_after headers with gentle exponential backoff."""
+
+    def __init__(self, base_delay: int = 60, multiplier: float = 1.1, max_delay: int = 300):
+        self.base_delay = base_delay
+        self.multiplier = multiplier
+        self.max_delay = max_delay
+
+    def __call__(self, retry_state):
+        # Check if we have a retry_after value from the exception
+        if retry_state.outcome and retry_state.outcome.exception():
+            exception = retry_state.outcome.exception()
+            if isinstance(exception, PylonRateLimitError) and hasattr(exception, 'retry_after'):
+                # Use the server's retry_after value directly
+                return exception.retry_after
+
+        # Fall back to gentle exponential backoff starting from base_delay
+        attempt = retry_state.attempt_number
+        delay = min(self.base_delay * (self.multiplier ** (attempt - 1)), self.max_delay)
+        return delay
+
+
 class RateLimiter:
     """Simple rate limiter to prevent hitting API rate limits."""
 
@@ -118,59 +140,6 @@ class PylonClient:
 
         return base_delay
 
-    @retry(
-        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=60)
-    )
-    def _make_request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
-        """Make a request to the Pylon API with retry logic."""
-        url = self._get_full_url(endpoint)
-
-        logger.info("Making API request", method=method, url=url)
-
-        try:
-            response = self.session.request(
-                method=method, url=url, timeout=self.config.pylon.timeout, **kwargs
-            )
-
-            # Log response details
-            logger.info(
-                "API response received",
-                status_code=response.status_code,
-                response_time=response.elapsed.total_seconds(),
-            )
-
-            if response.status_code == 429:  # Rate limit
-                retry_after = int(response.headers.get("Retry-After", 60))
-                logger.warning("Rate limited, waiting", retry_after=retry_after)
-                time.sleep(retry_after)
-                raise PylonRateLimitError(
-                    f"Rate limited. Retry after {retry_after} seconds", retry_after
-                )
-
-            response.raise_for_status()
-
-            return response.json()
-
-        except requests.exceptions.HTTPError as e:
-            error_data = {}
-            try:
-                error_data = response.json()
-            except:
-                pass
-
-            error_msg = f"HTTP {response.status_code}: {str(e)}"
-            if error_data.get("message"):
-                error_msg += f" - {error_data['message']}"
-
-            logger.error(
-                "API request failed", error=error_msg, status_code=response.status_code
-            )
-            raise PylonAPIError(error_msg, response.status_code, error_data)
-
-        except requests.exceptions.RequestException as e:
-            logger.error("Request failed", error=str(e))
-            raise PylonAPIError(f"Request failed: {str(e)}")
-
     def _get_full_url(self, endpoint: str) -> str:
         """Get the full URL for an API endpoint, handling different API versions."""
         base_url = self.config.pylon.api_base_url.rstrip("/")
@@ -181,7 +150,7 @@ class PylonClient:
 
     @retry(
         stop=stop_after_attempt(5),
-        wait=wait_exponential(multiplier=1, min=1, max=300),
+        wait=RespectRetryAfterWait(base_delay=60, multiplier=1.1, max_delay=300),
         retry=retry_if_exception_type(PylonRateLimitError),
     )
     def _make_request_with_rate_limit(
@@ -194,7 +163,7 @@ class PylonClient:
         url = self._get_full_url(endpoint)
 
         logger.info(
-            "Making API request with rate limit handling", method=method, url=url
+            "Making API request", method=method, url=url
         )
 
         try:
@@ -203,7 +172,7 @@ class PylonClient:
             )
 
             # Log response details
-            logger.info(
+            logger.debug(
                 "API response received",
                 status_code=response.status_code,
                 response_time=response.elapsed.total_seconds(),
@@ -239,104 +208,43 @@ class PylonClient:
             raise PylonAPIError(error_msg, response.status_code, error_data)
 
         except requests.exceptions.RequestException as e:
-            logger.error("Request failed", error=str(e))
+            logger.debug("Request failed", error=str(e))
             raise PylonAPIError(f"Request failed: {str(e)}")
-
-    def get_accounts(
-        self,
-        limit: int = 100,
-        offset: int = 0,
-        updated_since: Optional[datetime] = None,
-    ) -> Dict[str, Any]:
-        """Get accounts from Pylon API."""
-        params = {
-            "limit": limit,
-            "offset": offset,
-        }
-
-        if updated_since:
-            # Ensure timezone-aware datetime for API compatibility
-            if updated_since.tzinfo is None:
-                # Assume UTC if no timezone info
-                from datetime import timezone
-
-                updated_since = updated_since.replace(tzinfo=timezone.utc)
-            params["updated_since"] = updated_since.isoformat()
-
-        return self._make_request_with_rate_limit("GET", "/accounts", params=params)
 
     def get_account(self, account_id: str) -> Dict[str, Any]:
         """Get a specific account by ID."""
         return self._make_request_with_rate_limit("GET", f"/accounts/{account_id}")
 
-    def get_issues(
-        self, start_time: datetime, end_time: datetime, account_id: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """Get issues from Pylon API.
+    def search_issues(self, body: Dict[str, Any], cursor: Optional[str] = None) -> Dict[str, Any]:
+        """Search issues using POST /issues/search with a filter body.
+
+        The body should follow the API format, for example:
+        {"filter": {"field": "created_at", "operator": "time_range", "values": [start, end]}}
+        or compound filters like {"filter": {"and": [ ... ]}}.
 
         Args:
-            start_time: The start time (RFC3339) of the time range to get issues for
-            end_time: The end time (RFC3339) of the time range to get issues for
-            account_id: Optional account ID filter
-
-        Note:
-            The duration between start_time and end_time must be less than or equal to 30 days.
+            body: The search filter body
+            cursor: Optional cursor for pagination
         """
-        # Ensure timezone-aware datetimes for API compatibility
-        if start_time.tzinfo is None:
-            from datetime import timezone
-
-            start_time = start_time.replace(tzinfo=timezone.utc)
-        if end_time.tzinfo is None:
-            from datetime import timezone
-
-            end_time = end_time.replace(tzinfo=timezone.utc)
-
-        params = {
-            "start_time": start_time.isoformat(),
-            "end_time": end_time.isoformat(),
-        }
-
-        if account_id:
-            params["account_id"] = account_id
-
-        return self._make_request_with_rate_limit("GET", "/issues", params=params)
+        request_body = dict(body)
+        if cursor:
+            request_body["cursor"] = cursor
+        return self._make_request_with_rate_limit("POST", "/issues/search", json=request_body)
 
     def get_issue(self, issue_id: str) -> Dict[str, Any]:
         """Get a specific issue by ID."""
         return self._make_request_with_rate_limit("GET", f"/issues/{issue_id}")
 
-    def get_issue_messages(
-        self,
-        issue_id: str,
-        limit: int = 100,
-        offset: int = 0,
-        updated_since: Optional[datetime] = None,
-    ) -> Dict[str, Any]:
-        """Get messages for a specific issue."""
-        params = {
-            "limit": limit,
-            "offset": offset,
-        }
-
-        if updated_since:
-            # Ensure timezone-aware datetime for API compatibility
-            if updated_since.tzinfo is None:
-                # Assume UTC if no timezone info
-                from datetime import timezone
-
-                updated_since = updated_since.replace(tzinfo=timezone.utc)
-            params["updated_since"] = updated_since.isoformat()
-
+    def get_issue_messages(self, issue_id: str) -> Dict[str, Any]:
+        """Get all messages for a specific issue."""
         return self._make_request_with_rate_limit(
-            "GET", f"/issues/{issue_id}/messages", params=params
+            "GET", f"/issues/{issue_id}/messages"
         )
 
     def get_contacts(
         self,
         limit: int = 100,
         offset: int = 0,
-        updated_since: Optional[datetime] = None,
         account_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Get contacts from Pylon API."""
@@ -345,14 +253,6 @@ class PylonClient:
             "offset": offset,
         }
 
-        if updated_since:
-            # Ensure timezone-aware datetime for API compatibility
-            if updated_since.tzinfo is None:
-                # Assume UTC if no timezone info
-                from datetime import timezone
-
-                updated_since = updated_since.replace(tzinfo=timezone.utc)
-            params["updated_since"] = updated_since.isoformat()
         if account_id:
             params["account_id"] = account_id
 
@@ -366,22 +266,12 @@ class PylonClient:
         self,
         limit: int = 100,
         offset: int = 0,
-        updated_since: Optional[datetime] = None,
     ) -> Dict[str, Any]:
         """Get users from Pylon API."""
         params = {
             "limit": limit,
             "offset": offset,
         }
-
-        if updated_since:
-            # Ensure timezone-aware datetime for API compatibility
-            if updated_since.tzinfo is None:
-                # Assume UTC if no timezone info
-                from datetime import timezone
-
-                updated_since = updated_since.replace(tzinfo=timezone.utc)
-            params["updated_since"] = updated_since.isoformat()
 
         return self._make_request_with_rate_limit("GET", "/users", params=params)
 
@@ -393,22 +283,12 @@ class PylonClient:
         self,
         limit: int = 100,
         offset: int = 0,
-        updated_since: Optional[datetime] = None,
     ) -> Dict[str, Any]:
         """Get teams from Pylon API."""
         params = {
             "limit": limit,
             "offset": offset,
         }
-
-        if updated_since:
-            # Ensure timezone-aware datetime for API compatibility
-            if updated_since.tzinfo is None:
-                # Assume UTC if no timezone info
-                from datetime import timezone
-
-                updated_since = updated_since.replace(tzinfo=timezone.utc)
-            params["updated_since"] = updated_since.isoformat()
 
         return self._make_request_with_rate_limit("GET", "/teams", params=params)
 
@@ -417,99 +297,204 @@ class PylonClient:
         return self._make_request_with_rate_limit("GET", f"/teams/{team_id}")
 
     def iter_all_accounts(
-        self, updated_since: Optional[datetime] = None, batch_size: int = 100
+        self, batch_size: int = 100
     ) -> Iterator[Dict[str, Any]]:
         """Iterate through all accounts with pagination."""
         yield from self._paginate_all(
             fetch_func=self.get_accounts,
-            pagination_type="offset",
+            pagination_type="cursor",
             batch_size=batch_size,
-            updated_since=updated_since,
         )
 
     def iter_all_issues(
         self,
-        updated_since: Optional[datetime] = None,
-        account_id: Optional[str] = None,
-        batch_size: int = 100,
+        created_start: Optional[datetime] = None,
+        created_end: Optional[datetime] = None,
+        states: Optional[List[str]] = None,
+        extra_filters: Optional[Dict[str, Any]] = None,
     ) -> Iterator[Dict[str, Any]]:
-        """Iterate through all issues using time-based chunking.
+        """Iterate through issues using POST /issues/search with cursor-based pagination.
 
-        Args:
-            updated_since: Start time for issues retrieval
-            account_id: Optional account ID filter
-            batch_size: Not used for issues API, kept for compatibility
-
-        Note:
-            The Pylon API requires start_time and end_time parameters with max 30-day range.
-            This method chunks the time range to retrieve all issues.
+        - created_start/created_end build a created_at filter with operators:
+          time_is_after, time_is_before, or time_range
+        - states list builds a state filter with operator equals/in
+        - extra_filters can be either a full body with "filter"/"filters" or a
+          simple mapping which will be transformed into equals filters.
         """
         from datetime import timedelta, timezone
 
-        # Default to last 30 days if no updated_since provided
-        if updated_since is None:
-            updated_since = datetime.now(timezone.utc) - timedelta(days=30)
-        elif updated_since.tzinfo is None:
-            updated_since = updated_since.replace(tzinfo=timezone.utc)
+        def build_filter_body(range_start: Optional[datetime], range_end: Optional[datetime]) -> Dict[str, Any]:
+            filters: List[Dict[str, Any]] = []
 
-        # Current time as end_time
-        end_time = datetime.now(timezone.utc)
+            # created_at filter
+            if range_start or range_end:
+                # Ensure timezone-aware datetimes
+                rs = range_start
+                re = range_end
+                if rs and rs.tzinfo is None:
+                    rs = rs.replace(tzinfo=timezone.utc)
+                if re and re.tzinfo is None:
+                    re = re.replace(tzinfo=timezone.utc)
 
-        # Chunk the time range into 30-day periods (API limit)
-        current_start = updated_since
-        max_chunk_days = 30
+                if rs and re:
+                    filters.append(
+                        {
+                            "field": "created_at",
+                            "operator": "time_range",
+                            "values": [rs.isoformat(), re.isoformat()],
+                        }
+                    )
+                elif rs:
+                    filters.append(
+                        {
+                            "field": "created_at",
+                            "operator": "time_is_after",
+                            "values": [rs.isoformat()],
+                        }
+                    )
+                elif re:
+                    filters.append(
+                        {
+                            "field": "created_at",
+                            "operator": "time_is_before",
+                            "values": [re.isoformat()],
+                        }
+                    )
 
-        while current_start < end_time:
-            # Calculate chunk end time (max 30 days from start)
-            chunk_end = min(current_start + timedelta(days=max_chunk_days), end_time)
-
-            logger.info(
-                "Fetching issues for time range",
-                start_time=current_start.isoformat(),
-                end_time=chunk_end.isoformat(),
-                account_id=account_id,
-            )
-
-            try:
-                response = self.get_issues(
-                    start_time=current_start, end_time=chunk_end, account_id=account_id
+            # state filter
+            if states:
+                op = "equals" if len(states) == 1 else "in"
+                filters.append(
+                    {
+                        "field": "state",
+                        "operator": op,
+                        "values": states,
+                    }
                 )
 
-                data = response.get("data", [])
-                for item in data:
-                    yield item
+            # extra filters
+            if extra_filters:
+                # Pass-through if already shaped
+                if any(k in extra_filters for k in ("filter", "filters")):
+                    body = dict(extra_filters)
+                    # Merge constructed filters with provided when possible
+                    if filters:
+                        constructed = {"and": filters} if len(filters) > 1 else filters[0]
+                        if "filter" in body:
+                            body["filter"] = {"and": [body["filter"], constructed]}
+                        elif "filters" in body:
+                            body["filters"].extend(filters)
+                        else:
+                            body["filter"] = constructed
+                    return body
 
-                # Move to next chunk
-                current_start = chunk_end
+                # Transform mapping into equals filters
+                for k, v in extra_filters.items():
+                    # Allow simple scalars or lists => equals/in
+                    if isinstance(v, list):
+                        filters.append({"field": k, "operator": "in", "values": v})
+                    else:
+                        filters.append({"field": k, "operator": "equals", "values": [v]})
 
-            except PylonAPIError as e:
-                logger.error(
-                    "API error during issues iteration",
-                    error=e.message,
-                    status_code=e.status_code,
+            # Build final body
+            if not filters:
+                return {}
+            if len(filters) == 1:
+                return {"filter": filters[0]}
+            return {"filter": {"and": filters}}
+
+        def paginate_search_results(body: Dict[str, Any]) -> Iterator[Dict[str, Any]]:
+            """Paginate through search results using cursor-based pagination."""
+            cursor = None
+
+            while True:
+                logger.info(
+                    "Searching issues with cursor",
+                    cursor=cursor,
+                    has_filters=bool(body),
+                )
+
+                try:
+                    response = self.search_issues(body, cursor=cursor)
+                    data = response.get("data", [])
+                    pagination = response.get("pagination", {})
+
+                    if not data:
+                        break
+
+                    for item in data:
+                        yield item
+
+                    # Check if there are more pages
+                    if not pagination.get("has_next_page", False):
+                        break
+
+                    cursor = pagination.get("cursor")
+                    if not cursor:
+                        break
+
+                except PylonAPIError as e:
+                    logger.error(
+                        "API error during issues search iteration",
+                        error=e.message,
+                        status_code=e.status_code,
+                        cursor=cursor,
+                    )
+                    raise
+
+        # If created range exceeds 30 days, chunk the time range
+        if created_start and created_end:
+            rs = created_start
+            re = created_end
+            if rs.tzinfo is None:
+                rs = rs.replace(tzinfo=timezone.utc)
+            if re.tzinfo is None:
+                re = re.replace(tzinfo=timezone.utc)
+
+            current_start = rs
+            max_chunk_days = 30
+            while current_start < re:
+                chunk_end = min(current_start + timedelta(days=max_chunk_days), re)
+
+                body = build_filter_body(current_start, chunk_end)
+                logger.info(
+                    "Processing time chunk",
                     start_time=current_start.isoformat(),
                     end_time=chunk_end.isoformat(),
                 )
-                raise
+
+                # Use cursor pagination for this time chunk
+                yield from paginate_search_results(body)
+                current_start = chunk_end
+            return
+
+        # Single filter request with cursor pagination
+        body = build_filter_body(created_start, created_end)
+        logger.info("Processing issues search with cursor pagination", has_filters=bool(body))
+        yield from paginate_search_results(body)
 
     def iter_all_issue_messages(
-        self,
-        issue_id: str,
-        updated_since: Optional[datetime] = None,
-        batch_size: int = 100,
+        self, issue_id: str
     ) -> Iterator[Dict[str, Any]]:
-        """Iterate through all messages for an issue with pagination."""
-        yield from self._paginate_all(
-            fetch_func=self.get_issue_messages,
-            pagination_type="offset",
-            batch_size=batch_size,
-            issue_id=issue_id,
-            updated_since=updated_since,
-        )
+        """Iterate through all messages for an issue."""
+        try:
+            response = self._fetch_page_with_retry(
+                self.get_issue_messages, issue_id=issue_id
+            )
+            data = response.get("data", [])
+            for item in data:
+                yield item
+        except PylonAPIError as e:
+            logger.error(
+                "API error during issue messages retrieval",
+                error=e.message,
+                status_code=e.status_code,
+                issue_id=issue_id,
+            )
+            raise
 
     def iter_all_contacts(
         self,
-        updated_since: Optional[datetime] = None,
         account_id: Optional[str] = None,
         batch_size: int = 100,
     ) -> Iterator[Dict[str, Any]]:
@@ -518,30 +503,27 @@ class PylonClient:
             fetch_func=self.get_contacts,
             pagination_type="offset",
             batch_size=batch_size,
-            updated_since=updated_since,
             account_id=account_id,
         )
 
     def iter_all_users(
-        self, updated_since: Optional[datetime] = None, batch_size: int = 100
+        self, batch_size: int = 100
     ) -> Iterator[Dict[str, Any]]:
         """Iterate through all users with pagination."""
         yield from self._paginate_all(
             fetch_func=self.get_users,
             pagination_type="offset",
             batch_size=batch_size,
-            updated_since=updated_since,
         )
 
     def iter_all_teams(
-        self, updated_since: Optional[datetime] = None, batch_size: int = 100
+        self, batch_size: int = 100
     ) -> Iterator[Dict[str, Any]]:
         """Iterate through all teams with pagination."""
         yield from self._paginate_all(
             fetch_func=self.get_teams,
             pagination_type="offset",
             batch_size=batch_size,
-            updated_since=updated_since,
         )
 
     def _handle_pagination_response(
@@ -564,7 +546,8 @@ class PylonClient:
     ) -> tuple[List[Dict[str, Any]], Optional[str]]:
         """Handle cursor-based pagination response and return data and next cursor."""
         data = response.get("data", [])
-        next_cursor = response.get("pagination", {}).get("next_cursor")
+        pagination = response.get("pagination", {})
+        next_cursor = pagination.get("cursor") if pagination.get("has_next_page", False) else None
 
         return data, next_cursor
 
@@ -573,10 +556,10 @@ class PylonClient:
 
         @retry(
             stop=stop_after_attempt(self.config.pylon.rate_limit_retries),
-            wait=wait_exponential(
-                multiplier=self.config.pylon.rate_limit_base_delay,
-                min=self.config.pylon.rate_limit_base_delay,
-                max=self.config.pylon.rate_limit_max_delay,
+            wait=RespectRetryAfterWait(
+                base_delay=60,
+                multiplier=1.1,
+                max_delay=self.config.pylon.rate_limit_max_delay,
             ),
             retry=retry_if_exception_type(PylonRateLimitError),
         )
@@ -682,11 +665,10 @@ class PylonClient:
         else:
             raise ValueError(f"Unsupported pagination type: {pagination_type}")
 
-    def get_accounts_cursor(
+    def get_accounts(
         self,
         cursor: Optional[str] = None,
         limit: int = 100,
-        updated_since: Optional[datetime] = None,
     ) -> Dict[str, Any]:
         """Get accounts using cursor-based pagination."""
         params = {
@@ -695,27 +677,10 @@ class PylonClient:
 
         if cursor:
             params["cursor"] = cursor
-        if updated_since:
-            # Ensure timezone-aware datetime for API compatibility
-            if updated_since.tzinfo is None:
-                # Assume UTC if no timezone info
-                from datetime import timezone
-
-                updated_since = updated_since.replace(tzinfo=timezone.utc)
-            params["updated_since"] = updated_since.isoformat()
 
         return self._make_request_with_rate_limit("GET", "/accounts", params=params)
 
-    def iter_all_accounts_cursor(
-        self, updated_since: Optional[datetime] = None, batch_size: int = 100
-    ) -> Iterator[Dict[str, Any]]:
-        """Iterate through all accounts using cursor-based pagination."""
-        yield from self._paginate_all(
-            fetch_func=self.get_accounts_cursor,
-            pagination_type="cursor",
-            batch_size=batch_size,
-            updated_since=updated_since,
-        )
+    
 
     def close(self) -> None:
         """Close the session."""

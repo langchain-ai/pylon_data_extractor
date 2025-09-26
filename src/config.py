@@ -29,7 +29,7 @@ class PylonConfig(BaseModel):
         default=5, description="Maximum number of retries for rate limit errors"
     )
     rate_limit_base_delay: int = Field(
-        default=1, description="Base delay for rate limit backoff in seconds"
+        default=60, description="Base delay for rate limit backoff in seconds"
     )
     rate_limit_max_delay: int = Field(
         default=300, description="Maximum delay for rate limit backoff in seconds"
@@ -109,7 +109,7 @@ class Config(BaseModel):
             max_retries=int(os.getenv("PYLON_MAX_RETRIES", "3")),
             retry_delay=int(os.getenv("PYLON_RETRY_DELAY", "1")),
             rate_limit_retries=int(os.getenv("PYLON_RATE_LIMIT_RETRIES", "5")),
-            rate_limit_base_delay=int(os.getenv("PYLON_RATE_LIMIT_BASE_DELAY", "1")),
+            rate_limit_base_delay=int(os.getenv("PYLON_RATE_LIMIT_BASE_DELAY", "60")),
             rate_limit_max_delay=int(os.getenv("PYLON_RATE_LIMIT_MAX_DELAY", "300")),
             rate_limit_jitter=os.getenv("PYLON_RATE_LIMIT_JITTER", "true").lower()
             == "true",
