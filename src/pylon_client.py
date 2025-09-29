@@ -487,7 +487,19 @@ class PylonClient:
             response = self._fetch_page_with_retry(
                 self.get_issue_messages, issue_id=issue_id
             )
+
+            # Handle case where response might be None
+            if response is None:
+                logger.warning("Received None response for issue messages", issue_id=issue_id)
+                return
+
             data = response.get("data", [])
+
+            # Handle case where data might be None
+            if data is None:
+                logger.warning("Received None data for issue messages", issue_id=issue_id)
+                return
+
             for item in data:
                 yield item
         except PylonAPIError as e:
