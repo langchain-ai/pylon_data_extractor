@@ -42,7 +42,7 @@ Extended data replication utility for Pylon using the Pylon REST API. This tool 
 
 ### Command Line Interface
 
-The tool provides three main commands: `replicate`, `truncate`, and `classify`.
+The tool provides three main commands: `replicate`, `truncate`, `classify`, and `close`
 
 #### Replicate Data
 
@@ -111,6 +111,32 @@ The classify command:
 - Only updates issues when confidence score is above 0.8
 - Automatically tags updated issues with "auto-classified"
 - Supports both individual and combined field classification
+
+#### Close Tickets
+
+Automatically close eligible Slack tickets based on question analysis:
+
+```bash
+# Close eligible tickets with default settings
+uv run pylon-extract close
+
+# Close with custom batch size and max records
+uv run pylon-extract close --batch-size 20 --max-records 50
+
+# Process a single specific issue
+uv run pylon-extract close --issue-id "d5a04df6-6882-454b-bc8f-0d91fb688762"
+
+# Close with debug logging
+uv run pylon-extract close --log-level DEBUG
+```
+
+The close command:
+- Identifies "on customer" Slack issues with resolution and category set
+- Filters for issues older than 1 week since last message
+- Analyzes conversation history to extract customer questions
+- Determines if all customer questions have been resolved
+- Automatically closes issues where all questions are answered
+- Only processes Slack tickets (email tickets are excluded)
 
 #### Available Object Types
 

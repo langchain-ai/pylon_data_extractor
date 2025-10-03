@@ -22,6 +22,7 @@ from .bigquery_utils import BigQueryManager
 from .config import get_config
 from .replicator import PylonReplicator
 from .classifier import PylonClassifier
+from .ticket_closer import PylonTicketCloser
 
 # Configure structured logging with colors
 structlog.configure(
@@ -82,6 +83,63 @@ def truncate_table(table_name: str, log_level: str = "INFO") -> None:
 
     except Exception as e:
         logger.error("Table truncation failed", table_name=table_name, error=str(e))
+        sys.exit(1)
+
+
+def run_ticket_closing(
+    batch_size: int = 10,
+    log_level: str = "INFO",
+    max_records: Optional[int] = None,
+    issue_id: Optional[str] = None,
+) -> None:
+    """Close eligible Slack tickets based on question analysis."""
+    # Setup logging
+    setup_logging(log_level)
+
+    try:
+        # Load configuration
+        config = get_config()
+
+        # Create ticket closer
+        ticket_closer = PylonTicketCloser(config)
+
+        logger.info("Starting ticket closing", batch_size=batch_size, max_records=max_records, issue_id=issue_id)
+
+        # Run ticket closing
+        start_time = datetime.now()
+        result = ticket_closer.close_tickets(
+            batch_size=batch_size,
+            max_records=max_records,
+            issue_id=issue_id
+        )
+
+        # Display results
+        duration = datetime.now() - start_time
+
+        table = Table(title="Ticket Closing Results")
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="magenta")
+
+        table.add_row("Issues Processed", str(result["total_processed"]))
+        table.add_row("Issues Analyzed", str(result["total_analyzed"]))
+        table.add_row("Issues Classified", str(result["total_classified"]))
+        table.add_row("Issues Closed", str(result["total_closed"]))
+        table.add_row("Total Errors", str(result["total_errors"]))
+        table.add_row("Success", "✅" if result["success"] else "❌")
+        table.add_row("Duration", str(duration))
+
+        console.print(table)
+
+        if not result["success"]:
+            logger.error("Ticket closing failed", total_errors=result["total_errors"])
+        else:
+            logger.info("Ticket closing completed successfully", duration=str(duration))
+
+        # Close connections
+        ticket_closer.close()
+
+    except Exception as e:
+        logger.error("Ticket closing failed", error=str(e))
         sys.exit(1)
 
 
@@ -418,6 +476,28 @@ def main() -> None:
         default="INFO",
     )
 
+    # Close command
+    close_parser = subparsers.add_parser(
+        "close", help="Close eligible Slack tickets based on question analysis"
+    )
+    close_parser.add_argument(
+        "--log-level",
+        help="Log level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        default="INFO",
+    )
+    close_parser.add_argument(
+        "--batch-size", type=int, help="Batch size for processing issues", default=10
+    )
+    close_parser.add_argument(
+        "--max-records", type=int, help="Maximum number of issues to process", default=None
+    )
+    close_parser.add_argument(
+        "--issue-id",
+        help="Process a single issue by ID",
+        default=None,
+    )
+
     # Classify command
     classify_parser = subparsers.add_parser(
         "classify", help="Classify closed Pylon issues with missing resolution or category"
@@ -475,6 +555,13 @@ def main() -> None:
         )
     elif args.command == "truncate":
         truncate_table(table_name=args.table_name, log_level=args.log_level)
+    elif args.command == "close":
+        run_ticket_closing(
+            batch_size=args.batch_size,
+            log_level=args.log_level,
+            max_records=args.max_records,
+            issue_id=args.issue_id,
+        )
     elif args.command == "classify":
         run_classification(
             fields=args.fields,

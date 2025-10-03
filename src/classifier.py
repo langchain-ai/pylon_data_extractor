@@ -244,7 +244,7 @@ class PylonClassifier:
 
         return text.strip()
 
-    @traceable(name="classify_issue", tags=["pylon", "classification"])
+    @traceable(name="classify_issue", tags=["pylon"], resource_tags={"component": "classifier"})
     def _classify_issue(self, conversation_history: str, fields: List[str]) -> Optional[Dict[str, Any]]:
         """Classify an issue using OpenAI with JSON mode."""
         try:
