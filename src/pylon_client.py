@@ -165,7 +165,7 @@ class PylonClient:
         url = self._get_full_url(endpoint)
 
         logger.debug(
-            "Making API request", method=method, url=url
+            "Making API request", method=method, url=url, kwargs=kwargs
         )
 
         try:
@@ -221,7 +221,7 @@ class PylonClient:
         """Search issues using POST /issues/search with a filter body.
 
         The body should follow the API format, for example:
-        {"filter": {"field": "created_at", "operator": "time_range", "values": [start, end]}}
+        {"filter": {"field": "modified_at", "operator": "time_range", "values": [start, end]}}
         or compound filters like {"filter": {"and": [ ... ]}}.
 
         Args:
@@ -321,7 +321,7 @@ class PylonClient:
     ) -> Iterator[Dict[str, Any]]:
         """Iterate through issues using POST /issues/search with cursor-based pagination.
 
-        - created_start/created_end build a created_at filter with operators:
+        - created_start/created_end build a modified_at filter with operators:
           time_is_after, time_is_before, or time_range
         - states list builds a state filter with operator equals/in
         - extra_filters can be either a full body with "filter"/"filters" or a
@@ -332,7 +332,7 @@ class PylonClient:
         def build_filter_body(range_start: Optional[datetime], range_end: Optional[datetime]) -> Dict[str, Any]:
             filters: List[Dict[str, Any]] = []
 
-            # created_at filter
+            # modified_at filter
             if range_start or range_end:
                 # Ensure timezone-aware datetimes
                 rs = range_start
@@ -345,7 +345,7 @@ class PylonClient:
                 if rs and re:
                     filters.append(
                         {
-                            "field": "created_at",
+                            "field": "modified_at",
                             "operator": "time_range",
                             "values": [rs.isoformat(), re.isoformat()],
                         }
@@ -353,7 +353,7 @@ class PylonClient:
                 elif rs:
                     filters.append(
                         {
-                            "field": "created_at",
+                            "field": "modified_at",
                             "operator": "time_is_after",
                             "values": [rs.isoformat()],
                         }
@@ -361,7 +361,7 @@ class PylonClient:
                 elif re:
                     filters.append(
                         {
-                            "field": "created_at",
+                            "field": "modified_at",
                             "operator": "time_is_before",
                             "values": [re.isoformat()],
                         }

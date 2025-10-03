@@ -1,11 +1,13 @@
 """Classification module for Pylon issues."""
 
 import json
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import structlog
 from langchain_openai import ChatOpenAI
+from langsmith import traceable
 
 from .bigquery_utils import BigQueryManager
 from .config import Config, get_config
@@ -32,11 +34,12 @@ class PylonClassifier:
         self.bigquery_manager = BigQueryManager(self.config)
         self.pylon_client = PylonClient(self.config)
 
-        # Initialize OpenAI client
+        # Initialize OpenAI client with cost-optimized model
         self.llm = ChatOpenAI(
-            model="gpt-4-turbo-preview",
+            model="gpt-4o-mini",  # 95% cost reduction vs gpt-4-turbo-preview
             temperature=0.1,
-            max_tokens=200
+            max_tokens=200,
+            model_kwargs={"response_format": {"type": "json_object"}}  # Enable JSON mode
         )
 
     def classify_issues(
@@ -168,8 +171,13 @@ class PylonClassifier:
         logger.info("Querying for unclassified issues", query=query)
         return self.bigquery_manager.query_to_list(query)
 
-    def _get_conversation_history(self, issue_id: str) -> str:
-        """Get conversation history for an issue from BigQuery."""
+    def _get_conversation_history(self, issue_id: str, max_messages: int = 9) -> str:
+        """Get conversation history for an issue from BigQuery.
+
+        Args:
+            issue_id: The issue ID to fetch messages for
+            max_messages: Maximum number of messages to include (first 3 + last 6)
+        """
         query = f"""
         SELECT
             issue_id,
@@ -190,66 +198,93 @@ class PylonClassifier:
         if not messages:
             return ""
 
+        # Truncate to first 3 and last 6 messages to reduce tokens while maintaining context
+        # This aligns with prompt rules that weigh initial and final messages higher
+        if len(messages) > max_messages:
+            messages = messages[:3] + messages[-6:]
+            logger.debug(
+                "Truncated conversation history",
+                issue_id=issue_id,
+                original_count=len(messages),
+                truncated_to=max_messages
+            )
+
         # Format conversation history
         conversation = []
         for msg in messages:
             author = msg.get("author", "Unknown")
             timestamp = msg.get("ts", "")
             body = msg.get("body", "")
-            conversation.append(f"[{timestamp}] {author}: {body}")
+
+            # Strip HTML tags to minimize tokens
+            clean_body = self._strip_html(body)
+
+            conversation.append(f"[{timestamp}] {author}: {clean_body}")
 
         return "\n".join(conversation)
 
+    def _strip_html(self, html_text: str) -> str:
+        """Remove HTML tags and decode entities to minimize token usage."""
+        if not html_text:
+            return ""
+
+        # Remove HTML tags
+        text = re.sub(r'<[^>]+>', '', html_text)
+
+        # Decode common HTML entities
+        text = text.replace('&nbsp;', ' ')
+        text = text.replace('&amp;', '&')
+        text = text.replace('&lt;', '<')
+        text = text.replace('&gt;', '>')
+        text = text.replace('&quot;', '"')
+        text = text.replace('&#39;', "'")
+
+        # Remove excessive whitespace
+        text = re.sub(r'\s+', ' ', text)
+
+        return text.strip()
+
+    @traceable(name="classify_issue", tags=["pylon", "classification"])
     def _classify_issue(self, conversation_history: str, fields: List[str]) -> Optional[Dict[str, Any]]:
-        """Classify an issue using OpenAI."""
-        response_text = "No response received"
+        """Classify an issue using OpenAI with JSON mode."""
         try:
-            # Choose the appropriate prompt
+            # Choose the appropriate prompt template
             logger.debug("Building prompt", fields=fields, conversation_length=len(conversation_history))
             if len(fields) == 1:
                 if "resolution" in fields:
                     logger.debug("Using resolution classification prompt")
-                    prompt = RESOLUTION_CLASSIFICATION_PROMPT.replace("{conversation_history}", conversation_history)
+                    prompt_template = RESOLUTION_CLASSIFICATION_PROMPT
                 else:  # category
                     logger.debug("Using category classification prompt")
-                    prompt = CATEGORY_CLASSIFICATION_PROMPT.replace("{conversation_history}", conversation_history)
+                    prompt_template = CATEGORY_CLASSIFICATION_PROMPT
             else:
                 logger.debug("Using combined classification prompt")
-                prompt = COMBINED_CLASSIFICATION_PROMPT.replace("{conversation_history}", conversation_history)
-            
-            logger.debug("Prompt built successfully", prompt_length=len(prompt))
+                prompt_template = COMBINED_CLASSIFICATION_PROMPT
 
-            # Call OpenAI
-            logger.debug("Calling LLM")
-            response = self.llm.invoke(prompt)
+            # Split prompt into cacheable system message and user message
+            system_message = prompt_template.replace("{conversation_history}", "").strip()
+
+            logger.debug("Prompt built successfully", system_length=len(system_message))
+
+            # Call OpenAI with JSON mode - guarantees valid JSON
+            logger.debug("Calling LLM with JSON mode")
+            messages = [
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": f"<Conversation History>\n{conversation_history}\n</Conversation History>"}
+            ]
+            response = self.llm.invoke(messages)
             logger.debug("LLM response received", response_type=type(response))
-            response_text = response.content
-            logger.debug("Raw LLM response", response=response_text)
 
-            # Clean and parse JSON response
-            # Find the first occurrence of '{' and last occurrence of '}' to extract JSON
-            json_start = response_text.find('{')
-            json_end = response_text.rfind('}')
-            
-            if json_start >= 0 and json_end > json_start:
-                # Extract just the JSON part
-                json_text = response_text[json_start:json_end+1]
-                try:
-                    classification = json.loads(json_text)
-                    logger.debug("Cleaned classification response", classification=classification)
-                    return classification
-                except json.JSONDecodeError as e:
-                    logger.error("Failed to parse extracted JSON", error=str(e), json_text=json_text, full_response=response_text)
-                    return None
-            else:
-                logger.error("No JSON object found in LLM response", response=response_text)
-                return None
+            # Parse JSON response - should always be valid with JSON mode
+            classification = json.loads(response.content)
+            logger.debug("Classification response", classification=classification)
+            return classification
 
         except json.JSONDecodeError as e:
-            logger.error("Failed to parse classification response", error=str(e), response=response_text)
+            logger.error("Failed to parse JSON response", error=str(e), response=response.content if hasattr(response, 'content') else "No response")
             return None
         except Exception as e:
-            logger.error("Error during LLM classification", error=str(e), response=response_text)
+            logger.error("Error during LLM classification", error=str(e), error_type=type(e).__name__)
             return None
 
     def _should_update(self, classification: Dict[str, Any]) -> bool:

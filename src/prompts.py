@@ -38,15 +38,7 @@ no_action - (Does not warrant any real repeatable work docs or process improveme
 """.strip()
 
 _OUTPUT_RESOLUTION = """
-<Output Format>
-Provide your answer ONLY in the following JSON format, with no additional text:
-{"resolution": "<category>", "confidence": <0.0-1.0>}
-
-Example:
-{"resolution": "bug_fix", "confidence": 0.9}
-
-Do not include any explanatory text before or after the JSON.
-</Output Format>
+Return a JSON object with: resolution (string) and confidence (number 0.0-1.0).
 """.strip()
 
 _CONVERSATION_HISTORY = """
@@ -94,15 +86,7 @@ langsmith_insights - Categorize any ticket that is about automated insights aka 
 """.strip()
 
 _OUTPUT_CATEGORY = """
-<Output Format>
-Provide your answer ONLY in the following JSON format, with no additional text:
-{"category": "<category>", "confidence": <0.0-1.0>}
-
-Example:
-{"category": "langsmith_sdk", "confidence": 0.85}
-
-Do not include any explanatory text before or after the JSON.
-</Output Format>
+Return a JSON object with: category (string) and confidence (number 0.0-1.0).
 """.strip()
 
 # Public prompts composed from shared sections
@@ -141,15 +125,7 @@ Scope: You are an expert customer support analyst. Based on the conversation his
 
 {_CATEGORY_CATEGORIES}
 
-<Output Format>
-Provide your answer ONLY in the following JSON format, with no additional text:
-{{"resolution": "<resolution_category>", "resolution_confidence": <0.0-1.0>, "category": "<issue_category>", "category_confidence": <0.0-1.0>}}
-
-Example:
-{{"resolution": "bug_fix", "resolution_confidence": 0.9, "category": "langsmith_sdk", "category_confidence": 0.85}}
-
-Do not include any explanatory text before or after the JSON.
-</Output Format>
+Return a JSON object with: resolution (string), resolution_confidence (number 0.0-1.0), category (string), category_confidence (number 0.0-1.0).
 
 {_CONVERSATION_HISTORY}
 """
