@@ -152,6 +152,7 @@ Return a JSON object with:
   - id (number): Sequential ID starting from 1
   - question (string): Simple summary of the customer question
   - resolved (boolean): Whether this question was answered/resolved
+- quantity (integer): Number of questions in the array
 - all_resolved (boolean): Whether ALL customer questions were resolved
 
 Example:
@@ -161,6 +162,7 @@ Example:
     {"id": 1, "question": "How to configure LangChain with custom model", "resolved": true},
     {"id": 2, "question": "Why is deployment failing", "resolved": false}
   ],
+  "quantity": "2",
   "all_resolved": false
 }
 </Output Format>

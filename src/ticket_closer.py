@@ -352,17 +352,24 @@ class PylonTicketCloser:
     def _close_issue(self, issue_id: str) -> bool:
         """Close the issue via Pylon PATCH API."""
         try:
-            # Get current issue data for logging
+            # Get current issue data for tags and logging
             try:
                 issue_body = self.pylon_client.get_issue(issue_id)
                 issue = issue_body.get('data', {})
                 logger.debug("Issue body before closing", issue_id=issue_id, state=issue.get('state'))
             except Exception as e:
                 logger.warning("Could not retrieve issue body for debug logging", issue_id=issue_id, error=str(e))
+                issue = {}
+
+            # Retain existing tags and add "auto-closed" only if not present
+            tags = issue.get('tags', [])
+            if "auto-closed" not in tags:
+                tags.append("auto-closed")
 
             # Build payload to close the issue
             payload = {
-                "state": "closed"
+                "state": "closed",
+                "tags": tags
             }
 
             logger.debug("Closing issue", issue_id=issue_id, payload=payload)
