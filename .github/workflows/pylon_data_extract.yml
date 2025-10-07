@@ -1,0 +1,94 @@
+name: Pylon Extractor to BigQuery
+
+on:
+  schedule:
+    - cron: '0 12 * * *'   # daily at 8am ET
+  workflow_dispatch:       # Manual trigger
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          uv sync
+
+      - name: Set up GCP Credentials
+        env:
+          BIGQUERY_SERVICE_ACCOUNT_KEY_PATH: ${{ secrets.BIGQUERY_SERVICE_ACCOUNT_KEY_PATH }}
+        run: |
+          echo "$BIGQUERY_SERVICE_ACCOUNT_KEY_PATH" > creds.json
+          echo "BIGQUERY_SERVICE_ACCOUNT_KEY_PATH=creds.json" >> $GITHUB_ENV
+
+      - name: Run data extraction
+        env:
+          PYLON_API_KEY: ${{ secrets.PYLON_API_KEY }}
+          PYLON_API_BASE_URL: https://api.usepylon.com
+          PYLON_API_TIMEOUT: 60
+          PYLON_MAX_RETRIES: 3
+          PYLON_RETRY_DELAY: 1
+          BIGQUERY_PROJECT_ID: langchain-prod
+          BIGQUERY_DATASET_ID: src_pylon
+          BIGQUERY_LOCATION: US
+          REPLICATION_BATCH_SIZE: 1000
+          REPLICATION_MAX_WORKERS: 4
+          REPLICATION_INCREMENTAL_COLUMN: updated_at
+          REPLICATION_FULL_REFRESH: false
+          LOG_LEVEL: INFO
+        run: |
+          uv run pylon-extract replicate users
+          uv run pylon-extract replicate teams
+          uv run pylon-extract replicate accounts
+
+      - name: Set start and end dates (2-day lookback)
+        id: dates
+        run: |
+          START_DATE=$(date -u -d "2 days ago" +%Y-%m-%d)
+          END_DATE=$(date -u +%Y-%m-%d)
+          echo "start_date=$START_DATE" >> $GITHUB_OUTPUT
+          echo "end_date=$END_DATE" >> $GITHUB_OUTPUT
+
+      - name: Run issues extraction
+        env:
+          PYLON_API_KEY: ${{ secrets.PYLON_API_KEY }}
+          PYLON_API_BASE_URL: https://api.usepylon.com
+          PYLON_API_TIMEOUT: 60
+          PYLON_MAX_RETRIES: 3
+          PYLON_RETRY_DELAY: 1
+          BIGQUERY_PROJECT_ID: langchain-prod
+          BIGQUERY_DATASET_ID: src_pylon
+          BIGQUERY_LOCATION: US
+          REPLICATION_BATCH_SIZE: 1000
+          REPLICATION_MAX_WORKERS: 4
+          REPLICATION_INCREMENTAL_COLUMN: updated_at
+          REPLICATION_FULL_REFRESH: false
+          LOG_LEVEL: INFO
+        run: |
+          uv run pylon-extract replicate issues --created-start ${{ steps.dates.outputs.start_date }} --created-end ${{ steps.dates.outputs.end_date }}
+
+      - name: Run messages extraction
+        env:
+          PYLON_API_KEY: ${{ secrets.PYLON_API_KEY }}
+          PYLON_API_BASE_URL: https://api.usepylon.com
+          PYLON_API_TIMEOUT: 60
+          PYLON_MAX_RETRIES: 3
+          PYLON_RETRY_DELAY: 1
+          BIGQUERY_PROJECT_ID: langchain-prod
+          BIGQUERY_DATASET_ID: src_pylon
+          BIGQUERY_LOCATION: US
+          REPLICATION_BATCH_SIZE: 1000
+          REPLICATION_MAX_WORKERS: 4
+          REPLICATION_INCREMENTAL_COLUMN: updated_at
+          REPLICATION_FULL_REFRESH: false
+          LOG_LEVEL: INFO
+        run: |
+          uv run pylon-extract replicate messages --created-start ${{ steps.dates.outputs.start_date }} --created-end ${{ steps.dates.outputs.end_date }}
