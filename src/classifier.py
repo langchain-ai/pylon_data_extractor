@@ -14,11 +14,24 @@ from .config import Config, get_config
 from .pylon_client import PylonClient
 from .prompts import (
     CATEGORY_CLASSIFICATION_PROMPT,
+    CATEGORY_CLASSIFICATION_PROMPT_DEBUG,
     COMBINED_CLASSIFICATION_PROMPT,
+    COMBINED_CLASSIFICATION_PROMPT_DEBUG,
     RESOLUTION_CLASSIFICATION_PROMPT,
+    RESOLUTION_CLASSIFICATION_PROMPT_DEBUG,
 )
 
 logger = structlog.get_logger(__name__)
+
+
+# Transformers to map human-readable keys to actual Pylon API values
+RESOLUTION_TRANSFORMER = {
+    "bug_fix": "big_fix",
+}
+
+CATEGORY_TRANSFORMER = {
+    "langgraph_platform": "langgraph_langgraph_platform",
+}
 
 
 class ClassificationError(Exception):
@@ -29,8 +42,9 @@ class ClassificationError(Exception):
 class PylonClassifier:
     """Classifier for Pylon issues resolution and category."""
 
-    def __init__(self, config: Optional[Config] = None):
+    def __init__(self, config: Optional[Config] = None, debug: bool = False):
         self.config = config or get_config()
+        self.debug = debug
         self.bigquery_manager = BigQueryManager(self.config)
         self.pylon_client = PylonClient(self.config)
 
@@ -179,17 +193,30 @@ class PylonClassifier:
             max_messages: Maximum number of messages to include (first 3 + last 6)
         """
         query = f"""
+        WITH langchain_users AS (
+            SELECT DISTINCT
+                JSON_VALUE(user, '$.email') as email,
+                JSON_VALUE(user, '$.id') as user_id,
+                JSON_VALUE(t.data, '$.name') as team_name
+            FROM `{self.config.bigquery.project_id}.{self.config.bigquery.dataset_id}.int__pylon_teams` t,
+                UNNEST(JSON_EXTRACT_ARRAY(t.data, '$.users')) as user
+        )
         SELECT
-            issue_id,
-            JSON_VALUE(data, '$.id') as message_id,
+            m.issue_id,
+            JSON_VALUE(m.data, '$.id') as message_id,
             COALESCE(
-                JSON_VALUE(data, '$.author.user.email'),
-                JSON_VALUE(data, '$.author.contact.email')
+                JSON_VALUE(m.data, '$.author.user.email'),
+                JSON_VALUE(m.data, '$.author.contact.email')
             ) as author,
-            JSON_VALUE(data, '$.timestamp') as ts,
-            JSON_VALUE(data, '$.message_html') as body
-        FROM `{self.config.bigquery.project_id}.{self.config.bigquery.dataset_id}.int__pylon_messages`
-        WHERE issue_id = '{issue_id}'
+            COALESCE(lu.team_name, 'Customer') as team_classification,
+            JSON_VALUE(m.data, '$.timestamp') as ts,
+            JSON_VALUE(m.data, '$.message_html') as body
+        FROM `{self.config.bigquery.project_id}.{self.config.bigquery.dataset_id}.int__pylon_messages` m
+        LEFT JOIN langchain_users lu ON lu.email = COALESCE(
+            JSON_VALUE(m.data, '$.author.user.email'),
+            JSON_VALUE(m.data, '$.author.contact.email')
+        )
+        WHERE m.issue_id = '{issue_id}'
         ORDER BY ts ASC
         """
 
@@ -213,13 +240,20 @@ class PylonClassifier:
         conversation = []
         for msg in messages:
             author = msg.get("author", "Unknown")
+            team_classification = msg.get("team_classification", "Customer")
             timestamp = msg.get("ts", "")
             body = msg.get("body", "")
 
             # Strip HTML tags to minimize tokens
             clean_body = self._strip_html(body)
 
-            conversation.append(f"[{timestamp}] {author}: {clean_body}")
+            # Format author with team classification for LangChain team members
+            if team_classification != "Customer":
+                author_with_team = f"{author}({team_classification})"
+            else:
+                author_with_team = author
+
+            conversation.append(f"[{timestamp}] {author_with_team}: {clean_body}")
 
         return "\n".join(conversation)
 
@@ -249,17 +283,29 @@ class PylonClassifier:
         """Classify an issue using OpenAI with JSON mode."""
         try:
             # Choose the appropriate prompt template
-            logger.debug("Building prompt", fields=fields, conversation_length=len(conversation_history))
+            logger.debug("Building prompt", fields=fields, conversation_length=len(conversation_history), debug_mode=self.debug)
             if len(fields) == 1:
                 if "resolution" in fields:
-                    logger.debug("Using resolution classification prompt")
-                    prompt_template = RESOLUTION_CLASSIFICATION_PROMPT
+                    if self.debug:
+                        logger.debug("Using resolution classification prompt (debug)")
+                        prompt_template = RESOLUTION_CLASSIFICATION_PROMPT_DEBUG
+                    else:
+                        logger.debug("Using resolution classification prompt")
+                        prompt_template = RESOLUTION_CLASSIFICATION_PROMPT
                 else:  # category
-                    logger.debug("Using category classification prompt")
-                    prompt_template = CATEGORY_CLASSIFICATION_PROMPT
+                    if self.debug:
+                        logger.debug("Using category classification prompt (debug)")
+                        prompt_template = CATEGORY_CLASSIFICATION_PROMPT_DEBUG
+                    else:
+                        logger.debug("Using category classification prompt")
+                        prompt_template = CATEGORY_CLASSIFICATION_PROMPT
             else:
-                logger.debug("Using combined classification prompt")
-                prompt_template = COMBINED_CLASSIFICATION_PROMPT
+                if self.debug:
+                    logger.debug("Using combined classification prompt (debug)")
+                    prompt_template = COMBINED_CLASSIFICATION_PROMPT_DEBUG
+                else:
+                    logger.debug("Using combined classification prompt")
+                    prompt_template = COMBINED_CLASSIFICATION_PROMPT
 
             # Split prompt into cacheable system message and user message
             system_message = prompt_template.replace("{conversation_history}", "").strip()
@@ -322,16 +368,22 @@ class PylonClassifier:
 
             # Add resolution if present and confident
             if "resolution" in classification and classification.get("resolution_confidence", classification.get("confidence", 0)) >= 0.8:
+                resolution_value = classification["resolution"]
+                # Transform resolution value if mapping exists
+                transformed_resolution = RESOLUTION_TRANSFORMER.get(resolution_value, resolution_value)
                 custom_fields.append({
                     "slug": "resolution",
-                    "value": classification["resolution"]
+                    "value": transformed_resolution
                 })
 
             # Add category if present and confident
             if "category" in classification and classification.get("category_confidence", classification.get("confidence", 0)) >= 0.8:
+                category_value = classification["category"]
+                # Transform category value if mapping exists
+                transformed_category = CATEGORY_TRANSFORMER.get(category_value, category_value)
                 custom_fields.append({
                     "slug": "category",
-                    "value": classification["category"]
+                    "value": transformed_category
                 })
 
             if not custom_fields:

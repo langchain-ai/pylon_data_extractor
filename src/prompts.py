@@ -26,16 +26,20 @@ If multiple issues or topics are discussed, prioritize the most important one.
 """.strip()
 
 _RESOLUTION_CATEGORIES = {
-    "big_fix": {"description": "Bug fixes or version releases", "examples": "released new version, fixed customer issue"},
-    "feature_request": {"description": "New functionality added", "examples": "acknowledged feature request, included in release"},
+    "bug_fix": {"description": "LangChain Bug fixes or version releases we make", "examples": "we release new version, fixed customer issue"},
+    "feature_request": {"description": "New functionality added or requested", "examples": "acknowledged feature request, included in release"},
     "referred_to_public_resource": {"description": "Answered using existing docs", "examples": "pointed to KB article, existing documentation"},
-    "referred_with_internal_knowledge": {"description": "Answered but needs new docs", "examples": "internal knowledge shared, should create article"},
+    "referred_with_internal_knowledge": {"description": "Answered but needs new docs", "examples": "internal knowledge shared, should create/update article"},
     "customer_love": {"description": "Customer management activities", "examples": "meetings with DE, sales interactions"},
     "no_action": {"description": "No actionable work required", "examples": "spam, simple questions, no follow-up needed"}
 }
 
 _OUTPUT_RESOLUTION = """
 Return a JSON object with: resolution (string - must be exact key from options) and confidence (number 0.0-1.0).
+""".strip()
+
+_OUTPUT_RESOLUTION_DEBUG = """
+Return a JSON object with: resolution (string - must be exact key from options), confidence (number 0.0-1.0), and resolution_reason (one sentance on how the decision was made).
 """.strip()
 
 _CONVERSATION_HISTORY = """
@@ -57,7 +61,7 @@ _CATEGORY_CATEGORIES = {
     "admin_general_account_management": {"description": "Account administration", "examples": "adding users, project migration, settings"},
     "admin_security_privacy_and_compliance": {"description": "Security/compliance requests", "examples": "SOC 2, HIPAA, GDPR docs"},
     "langchain_oss_python": {"description": "LangChain Python library", "examples": "bugs, imports, GitHub issues"},
-    "langgraph_langgraph_platform": {"description": "LangGraph cloud platform", "examples": "deployment, agents, scaling issues"},
+    "anggraph_platform": {"description": "LangGraph cloud platform", "examples": "deployment, agents, scaling issues"},
     "langgraph_studio": {"description": "LangGraph Studio app", "examples": "desktop app, visualization tools"},
     "langsmith_administration": {"description": "LangSmith org settings", "examples": "permissions, admin controls"},
     "langsmith_annotations": {"description": "Annotation workflows", "examples": "annotation queues, feedback"},
@@ -83,6 +87,10 @@ _OUTPUT_CATEGORY = """
 Return a JSON object with: category (string - must be exact key from options) and confidence (number 0.0-1.0).
 """.strip()
 
+_OUTPUT_CATEGORY_DEBUG = """
+Return a JSON object with: category (string - must be exact key from options), confidence (number 0.0-1.0) and category_reason (one sentance on how the decision was made).
+""".strip()
+
 # Public prompts composed from shared sections
 RESOLUTION_CLASSIFICATION_PROMPT = f"""
 {_SCOPE_RESOLUTION}
@@ -93,6 +101,19 @@ RESOLUTION_CLASSIFICATION_PROMPT = f"""
 {_RESOLUTION_CATEGORIES}
 
 {_OUTPUT_RESOLUTION}
+
+{_CONVERSATION_HISTORY}
+"""
+
+RESOLUTION_CLASSIFICATION_PROMPT_DEBUG = f"""
+{_SCOPE_RESOLUTION}
+
+{_IMPORTANT_RULES}
+
+<Resolution Categories>
+{_RESOLUTION_CATEGORIES}
+
+{_OUTPUT_RESOLUTION_DEBUG}
 
 {_CONVERSATION_HISTORY}
 """
@@ -114,6 +135,23 @@ If multiple issues or topics are discussed, prioritize the most important one.
 {_CONVERSATION_HISTORY}
 """
 
+CATEGORY_CLASSIFICATION_PROMPT_DEBUG = f"""
+{_SCOPE_CATEGORY}
+Base your classification on the primary nature of the customer's issue or request.
+If multiple issues or topics are discussed, prioritize the most important one.
+
+{_IMPORTANT_RULES}
+
+<Categories>
+{_CATEGORY_CATEGORIES}
+</Categories>
+
+
+{_OUTPUT_CATEGORY_DEBUG}
+
+{_CONVERSATION_HISTORY}
+"""
+
 COMBINED_CLASSIFICATION_PROMPT = f"""
 Scope: You are an expert customer support analyst. Based on the conversation history provided, classify both the resolution type and the category for this closed support issue.
 
@@ -128,6 +166,24 @@ Scope: You are an expert customer support analyst. Based on the conversation his
 </Categories>
 
 Return a JSON object with: resolution (string - exact key), resolution_confidence (number 0.0-1.0), category (string - exact key), category_confidence (number 0.0-1.0).
+
+{_CONVERSATION_HISTORY}
+"""
+
+COMBINED_CLASSIFICATION_PROMPT_DEBUG = f"""
+Scope: You are an expert customer support analyst. Based on the conversation history provided, classify both the resolution type and the category for this closed support issue.
+
+{_IMPORTANT_RULES}
+
+<Resolutions>
+{_RESOLUTION_CATEGORIES}
+</Resolutions>
+
+<Categories>
+{_CATEGORY_CATEGORIES}
+</Categories>
+
+Return a JSON object with: resolution (string - exact key), resolution_confidence (number 0.0-1.0), resolution_reason (one sentence), category (string - exact key), category_confidence (number 0.0-1.0), category_reason (one sentence).
 
 {_CONVERSATION_HISTORY}
 """

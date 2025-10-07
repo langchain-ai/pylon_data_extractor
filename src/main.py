@@ -91,6 +91,7 @@ def run_ticket_closing(
     log_level: str = "INFO",
     max_records: Optional[int] = None,
     issue_id: Optional[str] = None,
+    debug: bool = False,
 ) -> None:
     """Close eligible Slack tickets based on question analysis."""
     # Setup logging
@@ -101,7 +102,7 @@ def run_ticket_closing(
         config = get_config()
 
         # Create ticket closer
-        ticket_closer = PylonTicketCloser(config)
+        ticket_closer = PylonTicketCloser(config, debug=debug)
 
         logger.info("Starting ticket closing", batch_size=batch_size, max_records=max_records, issue_id=issue_id)
 
@@ -497,6 +498,12 @@ def main() -> None:
         help="Process a single issue by ID",
         default=None,
     )
+    close_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug mode with verbose output",
+        default=False,
+    )
 
     # Classify command
     classify_parser = subparsers.add_parser(
@@ -561,6 +568,7 @@ def main() -> None:
             log_level=args.log_level,
             max_records=args.max_records,
             issue_id=args.issue_id,
+            debug=args.debug,
         )
     elif args.command == "classify":
         run_classification(

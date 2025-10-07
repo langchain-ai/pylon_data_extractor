@@ -26,11 +26,12 @@ class TicketClosingError(Exception):
 class PylonTicketCloser:
     """Ticket closer for Pylon issues."""
 
-    def __init__(self, config: Optional[Config] = None):
+    def __init__(self, config: Optional[Config] = None, debug: bool = False):
         self.config = config or get_config()
+        self.debug = debug
         self.bigquery_manager = BigQueryManager(self.config)
         self.pylon_client = PylonClient(self.config)
-        self.classifier = PylonClassifier(self.config)
+        self.classifier = PylonClassifier(self.config, debug=debug)
 
         # Initialize OpenAI client with cost-optimized model
         self.llm = ChatOpenAI(
@@ -86,11 +87,21 @@ class PylonTicketCloser:
                     issue_id = issue["issue_id"]
                     logger.info("Processing issue", issue_id=issue_id, progress=f"{total_processed + 1}/{len(candidate_issues)}")
 
+                    # Check if issue is already closed
+                    if self._is_issue_closed(issue_id):
+                        logger.info("Issue is already closed, skipping", issue_id=issue_id)
+                        total_processed += 1
+                        continue
+
                     # Check if issue has resolution/category, classify if missing
-                    classified = self._ensure_classification(issue_id)
-                    if classified:
-                        total_classified += 1
-                        logger.info("Issue classified", issue_id=issue_id)
+                    needs_classification = self._check_missing_classification(issue_id)
+                    if needs_classification:
+                        classified = self._ensure_classification(issue_id)
+                        if classified:
+                            total_classified += 1
+                            logger.info("Issue classified", issue_id=issue_id)
+                    else:
+                        logger.debug("Issue already has resolution and category, skipping classification", issue_id=issue_id)
 
                     # Check if issue meets closing criteria
                     should_close, analysis = self._should_close_issue(issue_id)
@@ -152,6 +163,7 @@ class PylonTicketCloser:
                 ON i.issue_id = m.issue_id
             WHERE JSON_VALUE(i.data, '$.state') = 'waiting_on_customer'
             AND JSON_VALUE(i.data, '$.source') = 'slack'
+            AND JSON_VALUE(i.data, '$.state') != 'closed'
             GROUP BY i.issue_id, i.data
         )
         SELECT
@@ -167,6 +179,51 @@ class PylonTicketCloser:
 
         logger.info("Querying for candidate issues", query=query)
         return self.bigquery_manager.query_to_list(query)
+
+    def _is_issue_closed(self, issue_id: str) -> bool:
+        """Check if an issue is already closed."""
+        try:
+            issue_body = self.pylon_client.get_issue(issue_id)
+            issue = issue_body.get('data', {})
+            state = issue.get('state')
+
+            is_closed = state == 'closed'
+            logger.debug("Issue state check", issue_id=issue_id, state=state, is_closed=is_closed)
+            return is_closed
+
+        except Exception as e:
+            logger.error("Error checking if issue is closed", issue_id=issue_id, error=str(e))
+            # If we can't check the state, assume it's not closed to be safe
+            return False
+
+    def _check_missing_classification(self, issue_id: str) -> bool:
+        """Check if issue is missing resolution or category fields."""
+        try:
+            # Get current issue data
+            issue_body = self.pylon_client.get_issue(issue_id)
+            issue = issue_body.get('data', {})
+
+            resolution = issue.get('custom_fields', {}).get('resolution', {}).get('value')
+            category = issue.get('custom_fields', {}).get('category', {}).get('value')
+
+            # Return True if either field is missing
+            missing_fields = []
+            if not resolution:
+                missing_fields.append('resolution')
+            if not category:
+                missing_fields.append('category')
+
+            if missing_fields:
+                logger.debug("Issue missing classification fields", issue_id=issue_id, missing_fields=missing_fields)
+                return True
+            else:
+                logger.debug("Issue has both resolution and category", issue_id=issue_id)
+                return False
+
+        except Exception as e:
+            logger.error("Error checking classification status", issue_id=issue_id, error=str(e))
+            # If we can't check, assume classification is needed to be safe
+            return True
 
     def _ensure_classification(self, issue_id: str) -> bool:
         """Ensure issue has resolution and category, classify if missing."""

@@ -128,6 +128,9 @@ uv run pylon-extract close --issue-id "d5a04df6-6882-454b-bc8f-0d91fb688762"
 
 # Close with debug logging
 uv run pylon-extract close --log-level DEBUG
+
+# Close with debug mode (includes detailed reasoning in classification output)
+uv run pylon-extract close --issue-id "d5a04df6-6882-454b-bc8f-0d91fb688762" --debug
 ```
 
 The close command:
@@ -137,6 +140,7 @@ The close command:
 - Determines if all customer questions have been resolved
 - Automatically closes issues where all questions are answered
 - Only processes Slack tickets (email tickets are excluded)
+- **Debug mode**: When `--debug` flag is used, includes detailed reasoning for classification decisions
 
 #### Available Object Types
 
