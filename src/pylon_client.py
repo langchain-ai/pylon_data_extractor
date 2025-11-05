@@ -205,7 +205,10 @@ class PylonClient:
                 error_msg += f" - {error_data['message']}"
 
             logger.error(
-                "API request failed", error=error_msg, status_code=response.status_code
+                "API request failed",
+                error=error_msg,
+                status_code=response.status_code,
+                error_data=error_data
             )
             raise PylonAPIError(error_msg, response.status_code, error_data)
 
@@ -355,7 +358,7 @@ class PylonClient:
                         {
                             "field": "modified_at",
                             "operator": "time_is_after",
-                            "values": [rs.isoformat()],
+                            "value": rs.isoformat(),
                         }
                     )
                 elif re:
@@ -363,7 +366,7 @@ class PylonClient:
                         {
                             "field": "modified_at",
                             "operator": "time_is_before",
-                            "values": [re.isoformat()],
+                            "value": re.isoformat(),
                         }
                     )
 
