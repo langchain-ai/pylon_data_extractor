@@ -2,7 +2,6 @@
 
 import os
 from pathlib import Path
-from typing import Optional
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
@@ -17,7 +16,7 @@ class PylonConfig(BaseModel):
     api_base_url: str = Field(
         default="https://app.usepylon.com/api/v1", description="Pylon API base URL"
     )
-    api_key: Optional[str] = Field(default=None, description="Pylon API key")
+    api_key: str | None = Field(default=None, description="Pylon API key")
     timeout: int = Field(default=60, description="Request timeout in seconds")
     max_retries: int = Field(
         default=3, description="Maximum number of retries for API requests"
@@ -76,7 +75,7 @@ class ReplicationConfig(BaseModel):
         default=False,
         description="Whether to perform full refresh instead of incremental",
     )
-    max_records_limit: Optional[int] = Field(
+    max_records_limit: int | None = Field(
         default=None,
         description="Maximum number of records to download (None for no limit)",
     )
@@ -166,7 +165,7 @@ class Config(BaseModel):
 
 
 # Global configuration instance
-config: Optional[Config] = None
+config: Config | None = None
 
 
 def get_config() -> Config:

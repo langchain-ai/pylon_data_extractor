@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import structlog
 from google.auth import default
@@ -25,7 +25,7 @@ class BigQueryError(Exception):
 class BigQueryManager:
     """Manager for BigQuery operations."""
 
-    def __init__(self, config: Optional[Config] = None):
+    def __init__(self, config: Config | None = None):
         self.config = config or get_config()
         self.client = self._create_client()
         self.dataset_ref = self.client.dataset(self.config.bigquery.dataset_id)
@@ -288,7 +288,7 @@ class BigQueryManager:
 
     def get_max_timestamp(
         self, table_name: str, timestamp_column: str = "updated_at"
-    ) -> Optional[datetime]:
+    ) -> datetime | None:
         """Get the maximum timestamp from a table for incremental replication."""
         try:
             query = f"""
@@ -458,10 +458,10 @@ class BigQueryManager:
 
     def get_issue_ids_for_filtering(
         self,
-        start_time: Optional[datetime] = None,
-        end_time: Optional[datetime] = None,
-        issue_id: Optional[str] = None,
-        state: Optional[str] = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
+        issue_id: str | None = None,
+        state: str | None = None,
     ) -> List[str]:
         """Get issue IDs from both pylon_issues and int__pylon_issues tables with comprehensive filtering.
 

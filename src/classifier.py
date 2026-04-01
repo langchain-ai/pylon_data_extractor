@@ -2,8 +2,7 @@
 
 import json
 import re
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import structlog
 from langchain_openai import ChatOpenAI
@@ -11,7 +10,6 @@ from langsmith import traceable
 
 from .bigquery_utils import BigQueryManager
 from .config import Config, get_config
-from .pylon_client import PylonClient
 from .prompts import (
     CATEGORY_CLASSIFICATION_PROMPT,
     CATEGORY_CLASSIFICATION_PROMPT_DEBUG,
@@ -20,6 +18,7 @@ from .prompts import (
     RESOLUTION_CLASSIFICATION_PROMPT,
     RESOLUTION_CLASSIFICATION_PROMPT_DEBUG,
 )
+from .pylon_client import PylonClient
 
 logger = structlog.get_logger(__name__)
 
@@ -42,7 +41,7 @@ class ClassificationError(Exception):
 class PylonClassifier:
     """Classifier for Pylon issues resolution and category."""
 
-    def __init__(self, config: Optional[Config] = None, debug: bool = False):
+    def __init__(self, config: Config | None = None, debug: bool = False):
         self.config = config or get_config()
         self.debug = debug
         self.bigquery_manager = BigQueryManager(self.config)
@@ -60,10 +59,10 @@ class PylonClassifier:
         self,
         fields: List[str] = ["resolution", "category"],
         batch_size: int = 10,
-        max_records: Optional[int] = None,
-        issue_id: Optional[str] = None,
-        created_start: Optional[str] = None,
-        created_end: Optional[str] = None,
+        max_records: int | None = None,
+        issue_id: str | None = None,
+        created_start: str | None = None,
+        created_end: str | None = None,
     ) -> Dict[str, Any]:
         """Classify closed issues with missing resolution or category fields."""
         logger.info("Starting issue classification", fields=fields, batch_size=batch_size, max_records=max_records, issue_id=issue_id, created_start=created_start, created_end=created_end)
@@ -146,7 +145,7 @@ class PylonClassifier:
         logger.info("Classification completed", **result)
         return result
 
-    def _get_unclassified_issues(self, fields: List[str], max_records: Optional[int] = None, created_start: Optional[str] = None, created_end: Optional[str] = None) -> List[Dict[str, Any]]:
+    def _get_unclassified_issues(self, fields: List[str], max_records: int | None = None, created_start: str | None = None, created_end: str | None = None) -> List[Dict[str, Any]]:
         """Get closed issues with missing resolution or category fields from BigQuery."""
         conditions = []
 
@@ -156,14 +155,14 @@ class PylonClassifier:
             conditions.append("JSON_VALUE(data, '$.custom_fields.category.value') IS NULL")
 
         where_clause = " OR ".join(conditions) if conditions else "1=0"
-        
+
         # Add timerange filtering
         time_conditions = []
         if created_start:
             time_conditions.append(f"TIMESTAMP(JSON_VALUE(data, '$.created_at')) >= TIMESTAMP('{created_start}')")
         if created_end:
             time_conditions.append(f"TIMESTAMP(JSON_VALUE(data, '$.created_at')) <= TIMESTAMP('{created_end}')")
-        
+
         time_filter = ""
         if time_conditions:
             time_filter = f"AND ({' AND '.join(time_conditions)})"
@@ -279,7 +278,7 @@ class PylonClassifier:
         return text.strip()
 
     @traceable(name="classify_issue", tags=["pylon"], resource_tags={"component": "classifier"})
-    def _classify_issue(self, conversation_history: str, fields: List[str]) -> Optional[Dict[str, Any]]:
+    def _classify_issue(self, conversation_history: str, fields: List[str]) -> Dict[str, Any] | None:
         """Classify an issue using OpenAI with JSON mode."""
         try:
             # Choose the appropriate prompt template

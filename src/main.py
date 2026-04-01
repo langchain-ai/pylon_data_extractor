@@ -1,10 +1,9 @@
 """Main entry point for Pylon Data Extractor."""
 
 import argparse
+import json
 import sys
 from datetime import datetime
-from typing import Optional
-import json
 
 import structlog
 from rich.console import Console
@@ -19,9 +18,9 @@ except ImportError:
     pass  # colorama not available, colors may not work on Windows
 
 from .bigquery_utils import BigQueryManager
+from .classifier import PylonClassifier
 from .config import get_config
 from .replicator import PylonReplicator
-from .classifier import PylonClassifier
 from .ticket_closer import PylonTicketCloser
 
 # Configure structured logging with colors
@@ -89,8 +88,8 @@ def truncate_table(table_name: str, log_level: str = "INFO") -> None:
 def run_ticket_closing(
     batch_size: int = 10,
     log_level: str = "INFO",
-    max_records: Optional[int] = None,
-    issue_id: Optional[str] = None,
+    max_records: int | None = None,
+    issue_id: str | None = None,
     debug: bool = False,
 ) -> None:
     """Close eligible Slack tickets based on question analysis."""
@@ -148,10 +147,10 @@ def run_classification(
     fields: list[str] = ["resolution", "category"],
     batch_size: int = 10,
     log_level: str = "INFO",
-    max_records: Optional[int] = None,
-    issue_id: Optional[str] = None,
-    created_start: Optional[str] = None,
-    created_end: Optional[str] = None,
+    max_records: int | None = None,
+    issue_id: str | None = None,
+    created_start: str | None = None,
+    created_end: str | None = None,
 ) -> None:
     """Classify closed Pylon issues with missing resolution or category."""
     # Setup logging
@@ -209,15 +208,15 @@ def run_classification(
 
 def run_replication(
     object_type: str,
-    batch_size: Optional[int] = None,
+    batch_size: int | None = None,
     log_level: str = "INFO",
     save_each_page: bool = False,
-    max_records: Optional[int] = None,
-    created_start: Optional[str] = None,
-    created_end: Optional[str] = None,
-    states: Optional[list[str]] = None,
-    issues_filter_json: Optional[str] = None,
-    issue_id: Optional[str] = None,
+    max_records: int | None = None,
+    created_start: str | None = None,
+    created_end: str | None = None,
+    states: list[str] | None = None,
+    issues_filter_json: str | None = None,
+    issue_id: str | None = None,
 ) -> None:
     """Extract and replicate data from Pylon to BigQuery."""
 

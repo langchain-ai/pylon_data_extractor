@@ -4,7 +4,6 @@ from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
-import requests
 
 from src.pylon_client import PylonAPIError, PylonClient, PylonRateLimitError
 
@@ -80,7 +79,7 @@ class TestPylonClient:
 
         start_time = datetime(2024, 1, 1)
         end_time = datetime(2024, 1, 2)
-        
+
         responses = [
             {"data": [{"id": f"iss{i}"} for i in range(1, 3)], "total": 3},
             {"data": [{"id": "iss3"}], "total": 3},
@@ -158,7 +157,7 @@ class TestPylonClient:
     def test_make_request_with_rate_limit_429(self, mock_config):
         """Test rate limit handling in enhanced request method."""
         from tenacity import RetryError
-        
+
         client = PylonClient(mock_config)
 
         mock_response = MagicMock()
@@ -182,7 +181,7 @@ class TestPylonClient:
 
         # Test with more data available
         response = {
-            "data": [{"id": "1"}, {"id": "2"}], 
+            "data": [{"id": "1"}, {"id": "2"}],
             "pagination": {"has_next_page": True}
         }
         data, has_more, next_offset = client._handle_pagination_response(response, 0, 2)
@@ -193,7 +192,7 @@ class TestPylonClient:
 
         # Test with no more data
         response = {
-            "data": [{"id": "9"}, {"id": "10"}], 
+            "data": [{"id": "9"}, {"id": "10"}],
             "pagination": {"has_next_page": False}
         }
         data, has_more, next_offset = client._handle_pagination_response(response, 8, 2)

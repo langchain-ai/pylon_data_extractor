@@ -3,17 +3,17 @@
 import json
 import re
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import structlog
 from langchain_openai import ChatOpenAI
 from langsmith import traceable
 
 from .bigquery_utils import BigQueryManager
-from .config import Config, get_config
-from .pylon_client import PylonClient
 from .classifier import PylonClassifier
+from .config import Config, get_config
 from .prompts import QUESTION_ANALYSIS_PROMPT
+from .pylon_client import PylonClient
 
 logger = structlog.get_logger(__name__)
 
@@ -26,7 +26,7 @@ class TicketClosingError(Exception):
 class PylonTicketCloser:
     """Ticket closer for Pylon issues."""
 
-    def __init__(self, config: Optional[Config] = None, debug: bool = False):
+    def __init__(self, config: Config | None = None, debug: bool = False):
         self.config = config or get_config()
         self.debug = debug
         self.bigquery_manager = BigQueryManager(self.config)
@@ -45,8 +45,8 @@ class PylonTicketCloser:
     def close_tickets(
         self,
         batch_size: int = 10,
-        max_records: Optional[int] = None,
-        issue_id: Optional[str] = None,
+        max_records: int | None = None,
+        issue_id: str | None = None,
     ) -> Dict[str, Any]:
         """Close eligible Slack tickets based on question analysis."""
         logger.info("Starting ticket closing process", batch_size=batch_size, max_records=max_records, issue_id=issue_id)
@@ -143,7 +143,7 @@ class PylonTicketCloser:
         logger.info("Ticket closing completed", **result)
         return result
 
-    def _get_candidate_issues(self, max_records: Optional[int] = None) -> List[Dict[str, Any]]:
+    def _get_candidate_issues(self, max_records: int | None = None) -> List[Dict[str, Any]]:
         """Get issues that are candidates for closing from BigQuery."""
         # Issues must be:
         # 1. In "on customer" state (waiting_on_customer)
@@ -263,7 +263,7 @@ class PylonTicketCloser:
             logger.error("Error ensuring classification", issue_id=issue_id, error=str(e))
             return False
 
-    def _should_close_issue(self, issue_id: str) -> tuple[bool, Optional[Dict[str, Any]]]:
+    def _should_close_issue(self, issue_id: str) -> tuple[bool, Dict[str, Any] | None]:
         """Determine if an issue should be closed based on question analysis."""
         try:
             # First verify issue has resolution and category
@@ -375,7 +375,7 @@ class PylonTicketCloser:
         return text.strip()
 
     @traceable(name="analyze_questions", tags=["pylon"], resource_tags={"component": "issue_closer"})
-    def _analyze_questions(self, conversation_history: str, pylon_issue_id: str) -> Optional[Dict[str, Any]]:
+    def _analyze_questions(self, conversation_history: str, pylon_issue_id: str) -> Dict[str, Any] | None:
         """Analyze questions in the conversation using OpenAI."""
         try:
             logger.debug("Building question analysis prompt", conversation_length=len(conversation_history))
