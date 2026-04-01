@@ -1,7 +1,7 @@
 """Data replication module for Pylon to BigQuery."""
 
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import structlog
 
@@ -21,7 +21,7 @@ class ReplicationError(Exception):
 class PylonReplicator:
     """Main replicator class for syncing Pylon data to BigQuery."""
 
-    def __init__(self, config: Optional[Config] = None):
+    def __init__(self, config: Config | None = None):
         self.config = config or get_config()
         self.pylon_client = PylonClient(self.config)
         self.bigquery_manager = BigQueryManager(self.config)
@@ -66,11 +66,11 @@ class PylonReplicator:
     def replicate_object(
         self,
         object_type: str,
-        batch_size: Optional[int] = None,
+        batch_size: int | None = None,
         save_each_page: bool = False,
-        max_records: Optional[int] = None,
-        issues_query: Optional[Dict[str, Any]] = None,
-        messages_filter: Optional[Dict[str, Any]] = None,
+        max_records: int | None = None,
+        issues_query: Dict[str, Any] | None = None,
+        messages_filter: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         """Replicate a specific object type to BigQuery.
 
@@ -120,8 +120,8 @@ class PylonReplicator:
         object_type: str,
         batch_size: int = 1000,
         save_each_page: bool = False,
-        max_records: Optional[int] = None,
-        issues_query: Optional[Dict[str, Any]] = None,
+        max_records: int | None = None,
+        issues_query: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         """Replicate standard object types (accounts, issues, contacts, users, teams)."""
         config = self.table_configs[object_type]
@@ -268,8 +268,8 @@ class PylonReplicator:
         self,
         batch_size: int = 1000,
         save_each_page: bool = False,
-        max_records: Optional[int] = None,
-        messages_filter: Optional[Dict[str, Any]] = None,
+        max_records: int | None = None,
+        messages_filter: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         """Replicate messages for issues using DB-first approach or direct API call for single issue.
 
@@ -500,9 +500,9 @@ class PylonReplicator:
 
     def replicate_all(
         self,
-        batch_size: Optional[int] = None,
+        batch_size: int | None = None,
         save_each_page: bool = False,
-        max_records: Optional[int] = None,
+        max_records: int | None = None,
     ) -> Dict[str, Any]:
         """Replicate all object types to BigQuery."""
         results = {}

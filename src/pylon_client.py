@@ -5,7 +5,7 @@ import threading
 import time
 from collections.abc import Iterator
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import requests
 import structlog
@@ -13,7 +13,6 @@ from tenacity import (
     retry,
     retry_if_exception_type,
     stop_after_attempt,
-    wait_exponential,
 )
 
 from .config import Config, get_config
@@ -78,8 +77,8 @@ class PylonAPIError(Exception):
     def __init__(
         self,
         message: str,
-        status_code: Optional[int] = None,
-        response_data: Optional[Dict[str, Any]] = None,
+        status_code: int | None = None,
+        response_data: Dict[str, Any] | None = None,
     ):
         self.message = message
         self.status_code = status_code
@@ -94,7 +93,7 @@ class PylonRateLimitError(PylonAPIError):
         self,
         message: str,
         retry_after: int = 60,
-        response_data: Optional[Dict[str, Any]] = None,
+        response_data: Dict[str, Any] | None = None,
     ):
         self.retry_after = retry_after
         super().__init__(message, 429, response_data)
@@ -103,7 +102,7 @@ class PylonRateLimitError(PylonAPIError):
 class PylonClient:
     """Client for interacting with Pylon API."""
 
-    def __init__(self, config: Optional[Config] = None):
+    def __init__(self, config: Config | None = None):
         self.config = config or get_config()
         self.session = requests.Session()
 
@@ -122,7 +121,7 @@ class PylonClient:
             )
 
     def _calculate_backoff_delay(
-        self, attempt: int, retry_after: Optional[int] = None
+        self, attempt: int, retry_after: int | None = None
     ) -> float:
         """Calculate backoff delay with exponential backoff and optional jitter."""
         if retry_after:
@@ -220,7 +219,7 @@ class PylonClient:
         """Get a specific account by ID."""
         return self._make_request_with_rate_limit("GET", f"/accounts/{account_id}")
 
-    def search_issues(self, body: Dict[str, Any], cursor: Optional[str] = None) -> Dict[str, Any]:
+    def search_issues(self, body: Dict[str, Any], cursor: str | None = None) -> Dict[str, Any]:
         """Search issues using POST /issues/search with a filter body.
 
         The body should follow the API format, for example:
@@ -254,7 +253,7 @@ class PylonClient:
         self,
         limit: int = 100,
         offset: int = 0,
-        account_id: Optional[str] = None,
+        account_id: str | None = None,
     ) -> Dict[str, Any]:
         """Get contacts from Pylon API."""
         params = {
@@ -317,10 +316,10 @@ class PylonClient:
 
     def iter_all_issues(
         self,
-        created_start: Optional[datetime] = None,
-        created_end: Optional[datetime] = None,
-        states: Optional[List[str]] = None,
-        extra_filters: Optional[Dict[str, Any]] = None,
+        created_start: datetime | None = None,
+        created_end: datetime | None = None,
+        states: List[str] | None = None,
+        extra_filters: Dict[str, Any] | None = None,
     ) -> Iterator[Dict[str, Any]]:
         """Iterate through issues using POST /issues/search with cursor-based pagination.
 
@@ -330,9 +329,9 @@ class PylonClient:
         - extra_filters can be either a full body with "filter"/"filters" or a
           simple mapping which will be transformed into equals filters.
         """
-        from datetime import timedelta, timezone
+        from datetime import timezone
 
-        def build_filter_body(range_start: Optional[datetime], range_end: Optional[datetime]) -> Dict[str, Any]:
+        def build_filter_body(range_start: datetime | None, range_end: datetime | None) -> Dict[str, Any]:
             filters: List[Dict[str, Any]] = []
 
             # modified_at filter
@@ -516,7 +515,7 @@ class PylonClient:
 
     def iter_all_contacts(
         self,
-        account_id: Optional[str] = None,
+        account_id: str | None = None,
         batch_size: int = 100,
     ) -> Iterator[Dict[str, Any]]:
         """Iterate through all contacts with pagination."""
@@ -564,7 +563,7 @@ class PylonClient:
 
     def _handle_cursor_pagination_response(
         self, response: Dict[str, Any]
-    ) -> tuple[List[Dict[str, Any]], Optional[str]]:
+    ) -> tuple[List[Dict[str, Any]], str | None]:
         """Handle cursor-based pagination response and return data and next cursor."""
         data = response.get("data", [])
         pagination = response.get("pagination", {})
@@ -688,7 +687,7 @@ class PylonClient:
 
     def get_accounts(
         self,
-        cursor: Optional[str] = None,
+        cursor: str | None = None,
         limit: int = 100,
     ) -> Dict[str, Any]:
         """Get accounts using cursor-based pagination."""
@@ -701,7 +700,7 @@ class PylonClient:
 
         return self._make_request_with_rate_limit("GET", "/accounts", params=params)
 
-    
+
 
     def close(self) -> None:
         """Close the session."""
