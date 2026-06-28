@@ -18,9 +18,9 @@ dependencies = [
     "structlog>=23.2.0",
     "tenacity>=8.2.3",
     "python-dotenv>=1.2.2",
-    "langchain-core>=1.3.0",
+    "langchain-core>=1.3.3",
     "langchain-openai>=1.1.14",
-    "langsmith>=0.7.31",
+    "langsmith>=0.8.0",
     "pygments>=2.20.0",
 ]
 
